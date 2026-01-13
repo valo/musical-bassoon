@@ -52,6 +52,24 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     CallITM
   }
 
+  enum HookAction {
+    DepositCollateral,
+    RollCollateral,
+    ReturnCollateral,
+    CancelCollateral,
+    SettleUSDC
+  }
+
+  struct HookReceipt {
+    HookAction action;
+    uint256 loanId;
+    address asset;
+    uint256 amount;
+    address recipient;
+    bytes32 messageId;
+    bool success;
+  }
+
   struct Loan {
     address borrower;
     address collateralAsset;
@@ -112,6 +130,14 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   mapping(bytes32 => bool) public signedData;
   bool public signaturesDisabled;
 
+  mapping(bytes32 => HookReceipt) public hookReceipts;
+  mapping(uint256 => mapping(HookAction => bytes32)) public hookReceiptByLoan;
+  mapping(bytes32 => bool) public hookReceiptConsumed;
+  address public receiptRelayer;
+  bool public requireDepositReceipt;
+  bool public requireSettlementReceipt;
+  bool public requireReturnReceipt;
+
   error CV_ZeroAddress();
   error CV_InvalidAmount();
   error CV_InvalidMaturity();
@@ -132,6 +158,13 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   error CV_MatchingNotSet();
   error CV_NotAuthorized();
   error CV_InsufficientBridgeFees();
+  error CV_NotReceiptRelayer();
+  error CV_InvalidReceipt();
+  error CV_ReceiptAlreadyRecorded();
+  error CV_ReceiptNotFound();
+  error CV_ReceiptNotSuccessful();
+  error CV_ReceiptConsumed();
+  error CV_ReceiptMismatch();
 
   event LoanCreated(
     uint256 indexed loanId,
@@ -170,6 +203,9 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   event SignaturesDisabledUpdated(bool disabled);
   event ActionSigned(address indexed signer, bytes32 indexed hash, IMatching.Action action);
   event SignatureRevoked(address indexed signer, bytes32 indexed hash);
+  event ReceiptRelayerUpdated(address indexed relayer);
+  event ReceiptRequirementsUpdated(bool requireDeposit, bool requireSettlement, bool requireReturn);
+  event HookReceiptRecorded(bytes32 indexed messageId, uint256 indexed loanId, HookAction action, bool success);
 
   constructor(
     address admin,
@@ -223,6 +259,10 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     }
     _validateBorrowAmount(quote);
 
+    loanId = nextLoanId;
+    if (requireDepositReceipt) {
+      _consumeReceipt(loanId, HookAction.DepositCollateral, quote.collateralAsset, quote.collateralAmount);
+    }
     loanId = nextLoanId++;
     loans[loanId] = Loan({
       borrower: msg.sender,
@@ -240,8 +280,10 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     });
     usedQuotes[hashQuote(quote)] = true;
 
-    IERC20(quote.collateralAsset).safeTransferFrom(msg.sender, address(this), quote.collateralAmount);
-    _bridgeToL2(quote.collateralAsset, quote.collateralAmount, l2Recipient);
+    if (!requireDepositReceipt) {
+      IERC20(quote.collateralAsset).safeTransferFrom(msg.sender, address(this), quote.collateralAmount);
+      _bridgeToL2(quote.collateralAsset, quote.collateralAmount, l2Recipient);
+    }
 
     // TODO: Verify Derive trade execution before disbursing when trade verification is specified.
     liquidityVault.borrow(quote.borrowAmount);
@@ -277,9 +319,16 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     }
 
     if (outcome == SettlementOutcome.Neutral) {
+      if (requireReturnReceipt) {
+        _consumeReceipt(loanId, HookAction.ReturnCollateral, loan.collateralAsset, collateralAmount);
+      }
       _convertToVariable(loanId, collateralAmount);
       emit LoanSettled(loanId, outcome, settlementAmount);
       return;
+    }
+
+    if (requireSettlementReceipt) {
+      _consumeReceipt(loanId, HookAction.SettleUSDC, address(usdc), settlementAmount);
     }
 
     if (settlementAmount < loan.principal) {
@@ -324,6 +373,9 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     }
     if (block.timestamp < loan.maturity) {
       revert CV_NotMatured();
+    }
+    if (requireReturnReceipt) {
+      _consumeReceipt(loanId, HookAction.ReturnCollateral, loan.collateralAsset, collateralAmount);
     }
     _convertToVariable(loanId, collateralAmount);
   }
@@ -627,6 +679,46 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     emit SignaturesDisabledUpdated(disabled);
   }
 
+  /// @notice Update the authorized receipt relayer for hook receipts.
+  function setReceiptRelayer(address relayer) external onlyRole(PARAMETER_ROLE) {
+    if (relayer == address(0)) {
+      revert CV_ZeroAddress();
+    }
+    receiptRelayer = relayer;
+    emit ReceiptRelayerUpdated(relayer);
+  }
+
+  /// @notice Toggle receipt requirements for deposit, settlement, and return flows.
+  function setReceiptRequirements(bool requireDeposit, bool requireSettlement, bool requireReturn)
+    external
+    onlyRole(PARAMETER_ROLE)
+  {
+    requireDepositReceipt = requireDeposit;
+    requireSettlementReceipt = requireSettlement;
+    requireReturnReceipt = requireReturn;
+    emit ReceiptRequirementsUpdated(requireDeposit, requireSettlement, requireReturn);
+  }
+
+  /// @notice Record a receipt from the L2 hook.
+  function recordHookReceipt(HookReceipt calldata receipt) external {
+    if (msg.sender != receiptRelayer) {
+      revert CV_NotReceiptRelayer();
+    }
+    if (receipt.messageId == bytes32(0) || receipt.loanId == 0) {
+      revert CV_InvalidReceipt();
+    }
+    if (hookReceipts[receipt.messageId].messageId != bytes32(0)) {
+      revert CV_ReceiptAlreadyRecorded();
+    }
+    if (hookReceiptByLoan[receipt.loanId][receipt.action] != bytes32(0)) {
+      revert CV_ReceiptAlreadyRecorded();
+    }
+
+    hookReceipts[receipt.messageId] = receipt;
+    hookReceiptByLoan[receipt.loanId][receipt.action] = receipt.messageId;
+    emit HookReceiptRecorded(receipt.messageId, receipt.loanId, receipt.action, receipt.success);
+  }
+
   /// @notice Pause loan creation and settlement.
   function pause() external onlyRole(PAUSER_ROLE) {
     _pause();
@@ -724,6 +816,24 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
       revert CV_ActionExpired();
     }
     // TODO: Add strategy-specific checks once strike bounds and risk limits are specified.
+  }
+
+  function _consumeReceipt(uint256 loanId, HookAction action, address asset, uint256 amount) internal {
+    bytes32 messageId = hookReceiptByLoan[loanId][action];
+    if (messageId == bytes32(0)) {
+      revert CV_ReceiptNotFound();
+    }
+    if (hookReceiptConsumed[messageId]) {
+      revert CV_ReceiptConsumed();
+    }
+    HookReceipt storage receipt = hookReceipts[messageId];
+    if (!receipt.success) {
+      revert CV_ReceiptNotSuccessful();
+    }
+    if (receipt.asset != asset || receipt.amount != amount) {
+      revert CV_ReceiptMismatch();
+    }
+    hookReceiptConsumed[messageId] = true;
   }
 
   modifier onlyKeeperOrExecutor() {

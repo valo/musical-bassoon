@@ -59,6 +59,7 @@ contract CollarVaultTest is Test {
     vault.setSocketBridgeConfig(address(wbtc), ISocketBridge(address(bridge)), ISocketConnector(address(connector)), 200_000, bytes(""), bytes(""));
     vault.setDeriveSubaccountId(1);
     vault.setTreasuryConfig(treasury, 2_000);
+    vault.setReceiptRelayer(address(this));
 
     address lender = address(0xCAFE);
     usdc.mint(lender, 1_000_000e6);
@@ -86,6 +87,29 @@ contract CollarVaultTest is Test {
     assertEq(usdc.balanceOf(borrower), quote.borrowAmount);
     assertEq(wbtc.balanceOf(address(bridge)), quote.collateralAmount);
     assertEq(liquidityVault.activeLoans(), quote.borrowAmount);
+  }
+
+  function testCreateLoanRequiresReceiptWhenEnabled() public {
+    vault.setReceiptRequirements(true, false, false);
+    CollarVault.Quote memory quote = _quote(1, borrower);
+    bytes memory sig = _signQuote(quote);
+
+    vm.startPrank(borrower);
+    wbtc.approve(address(vault), quote.collateralAmount);
+    vm.expectRevert(CollarVault.CV_ReceiptNotFound.selector);
+    vault.createLoan(quote, sig);
+    vm.stopPrank();
+
+    _recordReceipt(
+      vault.nextLoanId(),
+      CollarVault.HookAction.DepositCollateral,
+      address(wbtc),
+      quote.collateralAmount
+    );
+
+    vm.startPrank(borrower);
+    vault.createLoan(quote, sig);
+    vm.stopPrank();
   }
 
   function testCreateLoanRejectsExpiredQuote() public {
@@ -138,6 +162,25 @@ contract CollarVaultTest is Test {
     assertEq(usdc.balanceOf(treasury), 2e6);
     assertEq(usdc.balanceOf(address(liquidityVault)), 1_000_000e6 + 8e6);
     assertEq(uint256(vault.getLoan(loanId).state), uint256(CollarVault.LoanState.CLOSED));
+  }
+
+  function testSettleLoanRequiresReceiptWhenEnabled() public {
+    uint256 loanId = _createLoan();
+    CollarVault.Loan memory loan = vault.getLoan(loanId);
+    uint256 settlementAmount = loan.principal + 10e6;
+    usdc.mint(address(vault), settlementAmount);
+
+    vault.setReceiptRequirements(false, true, false);
+
+    vm.warp(loan.maturity + 1);
+    vm.prank(keeper);
+    vm.expectRevert(CollarVault.CV_ReceiptNotFound.selector);
+    vault.settleLoan(loanId, CollarVault.SettlementOutcome.PutITM, settlementAmount, 0);
+
+    _recordReceipt(loanId, CollarVault.HookAction.SettleUSDC, address(usdc), settlementAmount);
+
+    vm.prank(keeper);
+    vault.settleLoan(loanId, CollarVault.SettlementOutcome.PutITM, settlementAmount, 0);
   }
 
   function testSettleLoanCallItm() public {
@@ -198,6 +241,26 @@ contract CollarVaultTest is Test {
 
     assertEq(uint256(vault.getLoan(loanId).state), uint256(CollarVault.LoanState.CLOSED));
     assertEq(wbtc.balanceOf(borrower), loan.collateralAmount);
+  }
+
+  function testNeutralConversionRequiresReceiptWhenEnabled() public {
+    uint256 loanId = _createLoan();
+    CollarVault.Loan memory loan = vault.getLoan(loanId);
+
+    wbtc.mint(address(vault), loan.collateralAmount);
+    usdc.mint(address(eulerAdapter), loan.principal);
+
+    vault.setReceiptRequirements(false, false, true);
+
+    vm.warp(loan.maturity + 1);
+    vm.prank(keeper);
+    vm.expectRevert(CollarVault.CV_ReceiptNotFound.selector);
+    vault.settleLoan(loanId, CollarVault.SettlementOutcome.Neutral, 0, loan.collateralAmount);
+
+    _recordReceipt(loanId, CollarVault.HookAction.ReturnCollateral, address(wbtc), loan.collateralAmount);
+
+    vm.prank(keeper);
+    vault.settleLoan(loanId, CollarVault.SettlementOutcome.Neutral, 0, loan.collateralAmount);
   }
 
   function testRollLoanToNew() public {
@@ -365,5 +428,25 @@ contract CollarVaultTest is Test {
     bytes32 digest = vault.hashQuote(quote);
     (uint8 v, bytes32 r, bytes32 s) = vm.sign(mmKey, digest);
     return abi.encodePacked(r, s, v);
+  }
+
+  function _recordReceipt(
+    uint256 loanId,
+    CollarVault.HookAction action,
+    address asset,
+    uint256 amount
+  ) internal returns (bytes32 messageId) {
+    messageId = keccak256(abi.encodePacked(loanId, action, asset, amount, block.number));
+    vault.recordHookReceipt(
+      CollarVault.HookReceipt({
+        action: action,
+        loanId: loanId,
+        asset: asset,
+        amount: amount,
+        recipient: borrower,
+        messageId: messageId,
+        success: true
+      })
+    );
   }
 }
