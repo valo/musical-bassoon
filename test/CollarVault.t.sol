@@ -90,7 +90,7 @@ contract CollarVaultTest is Test {
   }
 
   function testCreateLoanRequiresReceiptWhenEnabled() public {
-    vault.setReceiptRequirements(true, false, false);
+    vault.setReceiptRequirements(true, false, false, false);
     CollarVault.Quote memory quote = _quote(1, borrower);
     bytes memory sig = _signQuote(quote);
 
@@ -170,7 +170,7 @@ contract CollarVaultTest is Test {
     uint256 settlementAmount = loan.principal + 10e6;
     usdc.mint(address(vault), settlementAmount);
 
-    vault.setReceiptRequirements(false, true, false);
+    vault.setReceiptRequirements(false, true, false, false);
 
     vm.warp(loan.maturity + 1);
     vm.prank(keeper);
@@ -195,6 +195,48 @@ contract CollarVaultTest is Test {
 
     assertEq(liquidityVault.activeLoans(), 0);
     assertEq(usdc.balanceOf(borrower), loan.principal + 5e6);
+    assertEq(uint256(vault.getLoan(loanId).state), uint256(CollarVault.LoanState.CLOSED));
+  }
+
+  function testSettleLoanRequiresSpotRfqReceiptWhenEnabled() public {
+    uint256 loanId = _createLoan();
+    CollarVault.Loan memory loan = vault.getLoan(loanId);
+    uint256 settlementAmount = loan.principal + 5e6;
+    usdc.mint(address(vault), settlementAmount);
+
+    vault.setReceiptRequirements(false, false, false, true);
+
+    vm.warp(loan.maturity + 1);
+    vm.prank(keeper);
+    vm.expectRevert(CollarVault.CV_ReceiptNotFound.selector);
+    vault.settleLoan(loanId, CollarVault.SettlementOutcome.CallITM, settlementAmount, 0);
+
+    _recordReceipt(
+      loanId,
+      CollarVault.HookAction.SpotRFQTrade,
+      address(wbtc),
+      loan.collateralAmount
+    );
+
+    vm.prank(keeper);
+    vault.settleLoan(loanId, CollarVault.SettlementOutcome.CallITM, settlementAmount, 0);
+  }
+
+  function testSettleLoanCallItmShortfall() public {
+    uint256 loanId = _createLoan();
+    CollarVault.Loan memory loan = vault.getLoan(loanId);
+    uint256 shortfall = 3e6;
+    uint256 settlementAmount = loan.principal - shortfall;
+
+    usdc.mint(address(vault), settlementAmount);
+
+    vm.warp(loan.maturity + 1);
+    vm.prank(keeper);
+    vault.settleLoan(loanId, CollarVault.SettlementOutcome.CallITM, settlementAmount, 0);
+
+    assertEq(liquidityVault.activeLoans(), 0);
+    assertEq(liquidityVault.totalAssets(), 1_000_000e6 - shortfall);
+    assertEq(usdc.balanceOf(borrower), loan.principal);
     assertEq(uint256(vault.getLoan(loanId).state), uint256(CollarVault.LoanState.CLOSED));
   }
 
@@ -250,7 +292,7 @@ contract CollarVaultTest is Test {
     wbtc.mint(address(vault), loan.collateralAmount);
     usdc.mint(address(eulerAdapter), loan.principal);
 
-    vault.setReceiptRequirements(false, false, true);
+    vault.setReceiptRequirements(false, false, true, false);
 
     vm.warp(loan.maturity + 1);
     vm.prank(keeper);

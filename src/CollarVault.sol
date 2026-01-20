@@ -20,6 +20,7 @@ import {ISocketConnector} from "./interfaces/ISocketConnector.sol";
 interface ILiquidityVault {
   function borrow(uint256 amount) external;
   function repay(uint256 amount) external;
+  function writeOff(uint256 amount) external;
   function asset() external view returns (address);
 }
 
@@ -57,7 +58,8 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     RollCollateral,
     ReturnCollateral,
     CancelCollateral,
-    SettleUSDC
+    SettleUSDC,
+    SpotRFQTrade
   }
 
   struct HookReceipt {
@@ -137,6 +139,7 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   bool public requireDepositReceipt;
   bool public requireSettlementReceipt;
   bool public requireReturnReceipt;
+  bool public requireSpotRfqReceipt;
 
   error CV_ZeroAddress();
   error CV_InvalidAmount();
@@ -179,6 +182,7 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     bytes32 quoteHash
   );
   event LoanSettled(uint256 indexed loanId, SettlementOutcome outcome, uint256 settlementAmount);
+  event SettlementShortfall(uint256 indexed loanId, uint256 shortfall);
   event LoanConverted(uint256 indexed loanId, uint256 variableDebt);
   event LoanRolled(uint256 indexed oldLoanId, uint256 indexed newLoanId, uint256 newPrincipal);
   event LoanClosed(uint256 indexed loanId);
@@ -204,7 +208,7 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   event ActionSigned(address indexed signer, bytes32 indexed hash, IMatching.Action action);
   event SignatureRevoked(address indexed signer, bytes32 indexed hash);
   event ReceiptRelayerUpdated(address indexed relayer);
-  event ReceiptRequirementsUpdated(bool requireDeposit, bool requireSettlement, bool requireReturn);
+  event ReceiptRequirementsUpdated(bool requireDeposit, bool requireSettlement, bool requireReturn, bool requireSpotRfq);
   event HookReceiptRecorded(bytes32 indexed messageId, uint256 indexed loanId, HookAction action, bool success);
 
   constructor(
@@ -327,18 +331,33 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
       return;
     }
 
+    if (requireSpotRfqReceipt) {
+      _consumeReceipt(loanId, HookAction.SpotRFQTrade, loan.collateralAsset, loan.collateralAmount);
+    }
     if (requireSettlementReceipt) {
       _consumeReceipt(loanId, HookAction.SettleUSDC, address(usdc), settlementAmount);
     }
 
+    uint256 shortfall = 0;
     if (settlementAmount < loan.principal) {
-      revert CV_InsufficientSettlement();
+      if (outcome != SettlementOutcome.CallITM) {
+        revert CV_InsufficientSettlement();
+      }
+      shortfall = loan.principal - settlementAmount;
     }
 
     // TODO: Clarify origination fee collection timing and deduct accordingly.
-    usdc.safeIncreaseAllowance(address(liquidityVault), loan.principal);
-    liquidityVault.repay(loan.principal);
-    uint256 excess = settlementAmount - loan.principal;
+    uint256 repayAmount = settlementAmount > loan.principal ? loan.principal : settlementAmount;
+    if (repayAmount > 0) {
+      usdc.safeIncreaseAllowance(address(liquidityVault), repayAmount);
+      liquidityVault.repay(repayAmount);
+    }
+    if (shortfall > 0) {
+      liquidityVault.writeOff(shortfall);
+      emit SettlementShortfall(loanId, shortfall);
+    }
+
+    uint256 excess = settlementAmount > loan.principal ? settlementAmount - loan.principal : 0;
 
     if (excess > 0) {
       if (outcome == SettlementOutcome.PutITM) {
@@ -689,14 +708,15 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   }
 
   /// @notice Toggle receipt requirements for deposit, settlement, and return flows.
-  function setReceiptRequirements(bool requireDeposit, bool requireSettlement, bool requireReturn)
+  function setReceiptRequirements(bool requireDeposit, bool requireSettlement, bool requireReturn, bool requireSpotRfq)
     external
     onlyRole(PARAMETER_ROLE)
   {
     requireDepositReceipt = requireDeposit;
     requireSettlementReceipt = requireSettlement;
     requireReturnReceipt = requireReturn;
-    emit ReceiptRequirementsUpdated(requireDeposit, requireSettlement, requireReturn);
+    requireSpotRfqReceipt = requireSpotRfq;
+    emit ReceiptRequirementsUpdated(requireDeposit, requireSettlement, requireReturn, requireSpotRfq);
   }
 
   /// @notice Record a receipt from the L2 hook.

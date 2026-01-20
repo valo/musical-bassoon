@@ -24,6 +24,8 @@ contract CollarLiquidityVault is ERC4626, AccessControl, ReentrancyGuard {
   error LV_RepayExceedsDebt();
   error LV_EulerVaultNotSet();
 
+  event LossRecorded(uint256 amount);
+
   constructor(IERC20 asset_, string memory name_, string memory symbol_, address admin) ERC20(name_, symbol_) ERC4626(asset_) {
     if (admin == address(0)) {
       revert LV_InvalidAmount();
@@ -79,6 +81,18 @@ contract CollarLiquidityVault is ERC4626, AccessControl, ReentrancyGuard {
     }
     IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
     activeLoans -= amount;
+  }
+
+  /// @notice Record a loan loss without transferring assets (lenders absorb the shortfall).
+  function writeOff(uint256 amount) external onlyRole(VAULT_ROLE) nonReentrant {
+    if (amount == 0) {
+      revert LV_InvalidAmount();
+    }
+    if (amount > activeLoans) {
+      revert LV_RepayExceedsDebt();
+    }
+    activeLoans -= amount;
+    emit LossRecorded(amount);
   }
 
   /// @notice Increase the tracked in-flight settlement amount.

@@ -19,3 +19,6 @@
 [submodule "lib/socket-plugs"]
 	path = lib/socket-plugs
 	url = https://github.com/derivexyz/socket-plugs
+[submodule "lib/v2-aa"]
+	path = lib/v2-aa
+	url = https://github.com/derivexyz/v2-aa

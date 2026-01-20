@@ -115,7 +115,8 @@ At maturity `t`, the executor (or a keeper) settles the collar position on Deriv
 
 #### Outcome 1: Put ITM / Underwater (`S_t < K_p`)
 
-- Executor sells the collateral on Derive to USDC and exercises the long put (Derive's settlement mechanism handles option exercise).
+- Executor requests a spot RFQ on Derive to sell the collateral to USDC. RFQs are full-fill only; the executor sets a `minAmountOut` and retries with a new RFQ if needed.
+- The RFQ is executed on Derive; collateral is sold to USDC before any bridging.
 - All USDC proceeds (including the put payoff) are withdrawn via the Withdrawal Module. The fast bridge is used to send funds back to L1.
 - On L1, the vault contract repays the principal `D` to the lending pool. If proceeds exceed `D`, the excess is distributed between the liquidity vault and protocol treasury according to a governance-configurable split. The loan state becomes `CLOSED` after bridged funds arrive.
 
@@ -128,9 +129,12 @@ At maturity `t`, the executor (or a keeper) settles the collar position on Deriv
 
 #### Outcome 3: Call ITM / Take profit (`S_t > K_c`)
 
-- Executor sells the collateral to USDC and exercises the long put (unused) and settles the short call by paying the call payoff to the market maker.
-- After subtracting the call payoff and repaying the principal `D` to the lending pool, any remainder belongs to the borrower. The executor withdraws all USDC and bridges it to L1.
-- On L1, the borrower is paid after bridged USDC arrives on L1; the vault contract does not make optimistic payouts. The loan state becomes `CLOSED` after bridged funds arrive.
+- Derive's cash system allows negative USDC balances; the short call settlement can create a negative cash balance (i.e., a USDC borrow) in the vault subaccount.
+- Executor requests a spot RFQ on Derive to sell the collateral to USDC. RFQs are full-fill only; the executor sets a `minAmountOut` and retries with a new RFQ if needed.
+- The RFQ is executed on Derive; the resulting cash balance nets against any negative USDC balance. There is no explicit repay call; repayment occurs by netting the cash balance back to >= 0.
+- Only the net positive USDC balance (after the call payoff and any negative cash balance are covered) is withdrawn via the Withdrawal Module and bridged to L1.
+- On L1, the vault repays principal `D` to the lending pool from the bridged USDC. If the net bridged amount is insufficient to repay `D`, the protocol backstops the shortfall with L1 liquidity; the borrower receives zero in this case.
+- If the net bridged amount exceeds `D`, the excess belongs to the borrower. The vault contract does not make optimistic payouts; the loan state becomes `CLOSED` after bridged funds arrive.
 
 ### 5.3 Variable-rate conversion (neutral corridor)
 
@@ -223,6 +227,7 @@ Monitors for situations such as the bridge being down or fast withdrawal limits 
 - Liquidation risk: Variable-rate loans on Euler are subject to liquidation. The protocol relies on Euler's liquidation mechanisms rather than triggering forced sales.
 - Withdrawal race conditions: Because bridging is asynchronous, ensure that bridging calls are idempotent and that funds are not double-counted.
 - Oracle reliability: Use multiple price feeds or Derive's TWAP to determine settlement prices. Validate oracle data in the off-chain executor.
+- Derive cash balance risk: Call ITM settlement may result in a negative USDC balance on Derive; ensure the collateral sale fully nets the negative balance before bridging, and account for potential L1 backstop usage if net proceeds are below principal.
 - Role-based parameter changes: Strike bounds, slippage tolerances, market allowlists and other risk parameters are adjustable by a role controlled by a multisig; governance modules may replace this role later.
 - Emergency controls: The protocol supports emergency controls to pause new loans and settlement.
 
