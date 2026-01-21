@@ -231,17 +231,17 @@ contract CollarTSA is CollateralManagementTSA {
     }
 
     if (tradeData.asset == address(tsaAddresses.wrappedDepositAsset)) {
-      _tradeCollateral(tradeData);
-    } else {
-      revert CTSA_InvalidAsset();
+      revert CTSA_SpotTradesDisabled();
     }
+    revert CTSA_InvalidAsset();
   }
 
   /// @dev If extraData is 0, the action is a maker action; otherwise, it is a taker action.
   function _verifyRfqAction(IMatching.Action memory action, bytes memory extraData) internal view {
     // TODO: Confirm whether RFQ maxFee should be bounded by on-chain parameters for collar trades.
     IRfqModule.TradeData[] memory makerTrades;
-    if (extraData.length == 0) {
+    bool isTaker = extraData.length != 0;
+    if (!isTaker) {
       IRfqModule.RfqOrder memory makerOrder = abi.decode(action.data, (IRfqModule.RfqOrder));
       makerTrades = makerOrder.trades;
     } else {
@@ -252,7 +252,12 @@ contract CollarTSA is CollateralManagementTSA {
       makerTrades = abi.decode(extraData, (IRfqModule.TradeData[]));
     }
 
-    _verifyCollarRfqTrades(makerTrades, extraData.length != 0);
+    if (_isSpotRfqTrade(makerTrades)) {
+      _verifySpotRfqTrade(makerTrades[0], isTaker);
+      return;
+    }
+
+    _verifyCollarRfqTrades(makerTrades, isTaker);
   }
 
   function _verifyCollarRfqTrades(IRfqModule.TradeData[] memory makerTrades, bool isTaker) internal view {
@@ -290,6 +295,38 @@ contract CollarTSA is CollateralManagementTSA {
     int postTradeCash = cashBalance + (isTaker ? cashDelta : -cashDelta);
     if (postTradeCash < $.params.maxNegCash) {
       revert CTSA_InsufficientCash();
+    }
+  }
+
+  function _isSpotRfqTrade(IRfqModule.TradeData[] memory makerTrades) internal view returns (bool) {
+    if (makerTrades.length != 1) {
+      return false;
+    }
+    BaseTSAAddresses memory tsaAddresses = getBaseTSAAddresses();
+    return makerTrades[0].asset == address(tsaAddresses.wrappedDepositAsset) && makerTrades[0].subId == 0;
+  }
+
+  function _verifySpotRfqTrade(IRfqModule.TradeData memory trade, bool isTaker) internal view {
+    if (!isTaker) {
+      revert CTSA_SpotRfqRequiresTaker();
+    }
+    if (trade.subId != 0) {
+      revert CTSA_InvalidAsset();
+    }
+
+    uint amount = trade.amount.toUint256();
+    if (amount == 0) {
+      revert CTSA_SpotRfqAmountInvalid();
+    }
+
+    uint basePrice = _getBasePrice();
+    if (trade.price < basePrice.multiplyDecimal(_getCollateralManagementParams().worstSpotSellPrice)) {
+      revert CTSA_SpotRfqPriceTooLow();
+    }
+
+    (, uint baseBalance,,,) = _getSubAccountStats();
+    if (amount > baseBalance) {
+      revert CTSA_SpotRfqSellTooMuch();
     }
   }
 
@@ -533,6 +570,7 @@ contract CollarTSA is CollateralManagementTSA {
   error CTSA_InvalidModule();
   error CTSA_InvalidAsset();
   error CTSA_InvalidDesiredAmount();
+  error CTSA_SpotTradesDisabled();
   error CTSA_WithdrawingUtilisedCollateral();
   error CTSA_WithdrawalNegativeCash();
   error CTSA_SellingTooManyCalls();
@@ -550,4 +588,8 @@ contract CollarTSA is CollateralManagementTSA {
   error CTSA_InvalidRfqTradeDetails();
   error CTSA_InvalidTradeAmount();
   error CTSA_TradeDataDoesNotMatchOrderHash();
+  error CTSA_SpotRfqRequiresTaker();
+  error CTSA_SpotRfqAmountInvalid();
+  error CTSA_SpotRfqPriceTooLow();
+  error CTSA_SpotRfqSellTooMuch();
 }

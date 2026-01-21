@@ -212,4 +212,62 @@ contract CollarTSA_ValidationTests is CollarTSATestUtils {
     vm.expectRevert(CollarTSA.CTSA_TradeDataDoesNotMatchOrderHash.selector);
     collarTsa.signActionData(action, abi.encode(trades));
   }
+
+  function testAllowsSpotRfqSellAsTaker() public {
+    _depositToTSA(2e18);
+    _executeDeposit(2e18);
+
+    IRfqModule.TradeData[] memory trades = new IRfqModule.TradeData[](1);
+    trades[0] = IRfqModule.TradeData({
+      asset: address(markets[MARKET].base),
+      subId: 0,
+      price: MARKET_REF_SPOT,
+      amount: 1e18
+    });
+
+    IRfqModule.TakerOrder memory order =
+      IRfqModule.TakerOrder({orderHash: keccak256(abi.encode(trades)), maxFee: 0});
+
+    IActionVerifier.Action memory action = IActionVerifier.Action({
+      subaccountId: tsaSubacc,
+      nonce: ++tsaNonce,
+      module: rfqModule,
+      data: abi.encode(order),
+      expiry: block.timestamp + 8 minutes,
+      owner: address(tsa),
+      signer: address(tsa)
+    });
+
+    vm.prank(signer);
+    collarTsa.signActionData(action, abi.encode(trades));
+  }
+
+  function testRejectsSpotRfqSellAsMaker() public {
+    _depositToTSA(2e18);
+    _executeDeposit(2e18);
+
+    IRfqModule.TradeData[] memory trades = new IRfqModule.TradeData[](1);
+    trades[0] = IRfqModule.TradeData({
+      asset: address(markets[MARKET].base),
+      subId: 0,
+      price: MARKET_REF_SPOT,
+      amount: 1e18
+    });
+
+    IRfqModule.RfqOrder memory order = IRfqModule.RfqOrder({maxFee: 0, trades: trades});
+
+    IActionVerifier.Action memory action = IActionVerifier.Action({
+      subaccountId: tsaSubacc,
+      nonce: ++tsaNonce,
+      module: rfqModule,
+      data: abi.encode(order),
+      expiry: block.timestamp + 8 minutes,
+      owner: address(tsa),
+      signer: address(tsa)
+    });
+
+    vm.prank(signer);
+    vm.expectRevert(CollarTSA.CTSA_SpotRfqRequiresTaker.selector);
+    collarTsa.signActionData(action, "");
+  }
 }

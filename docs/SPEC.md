@@ -116,6 +116,7 @@ At maturity `t`, the executor (or a keeper) settles the collar position on Deriv
 #### Outcome 1: Put ITM / Underwater (`S_t < K_p`)
 
 - Executor requests a spot RFQ on Derive to sell the collateral to USDC. RFQs are full-fill only; the executor sets a `minAmountOut` and retries with a new RFQ if needed.
+- Spot collateral sales are executed via the RFQ module only; order-book spot trades are not used.
 - The RFQ is executed on Derive; collateral is sold to USDC before any bridging.
 - All USDC proceeds (including the put payoff) are withdrawn via the Withdrawal Module. The fast bridge is used to send funds back to L1.
 - On L1, the vault contract repays the principal `D` to the lending pool. If proceeds exceed `D`, the excess is distributed between the liquidity vault and protocol treasury according to a governance-configurable split. The loan state becomes `CLOSED` after bridged funds arrive.
@@ -131,6 +132,7 @@ At maturity `t`, the executor (or a keeper) settles the collar position on Deriv
 
 - Derive's cash system allows negative USDC balances; the short call settlement can create a negative cash balance (i.e., a USDC borrow) in the vault subaccount.
 - Executor requests a spot RFQ on Derive to sell the collateral to USDC. RFQs are full-fill only; the executor sets a `minAmountOut` and retries with a new RFQ if needed.
+- Spot collateral sales are executed via the RFQ module only; order-book spot trades are not used.
 - The RFQ is executed on Derive; the resulting cash balance nets against any negative USDC balance. There is no explicit repay call; repayment occurs by netting the cash balance back to >= 0.
 - Only the net positive USDC balance (after the call payoff and any negative cash balance are covered) is withdrawn via the Withdrawal Module and bridged to L1.
 - On L1, the vault repays principal `D` to the lending pool from the bridged USDC. If the net bridged amount is insufficient to repay `D`, the protocol backstops the shortfall with L1 liquidity; the borrower receives zero in this case.
