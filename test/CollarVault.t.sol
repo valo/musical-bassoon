@@ -9,7 +9,6 @@ import {IEulerAdapter} from "../src/interfaces/IEulerAdapter.sol";
 import {ISocketBridge} from "../src/interfaces/ISocketBridge.sol";
 import {ISocketConnector} from "../src/interfaces/ISocketConnector.sol";
 import {ICollarVaultMessenger} from "../src/interfaces/ICollarVaultMessenger.sol";
-import {IMatching} from "v2-matching/src/interfaces/IMatching.sol";
 import {CollarLZMessages} from "../src/bridge/CollarLZMessages.sol";
 import {MessagingFee, MessagingReceipt} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
@@ -17,7 +16,6 @@ import {MockBridge} from "./mocks/MockBridge.sol";
 import {MockConnector} from "./mocks/MockConnector.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockEulerAdapter} from "./mocks/MockEulerAdapter.sol";
-import {MockMatching} from "./mocks/MockMatching.sol";
 import {ReentrantERC20} from "./mocks/ReentrantERC20.sol";
 
 contract CollarVaultTest is Test {
@@ -27,7 +25,6 @@ contract CollarVaultTest is Test {
   MockBridge internal bridge;
   MockConnector internal connector;
   MockEulerAdapter internal eulerAdapter;
-  MockMatching internal matching;
   CollarVault internal vault;
   MockLZMessenger internal messenger;
 
@@ -47,11 +44,10 @@ contract CollarVaultTest is Test {
     bridge = new MockBridge(wbtc);
     connector = new MockConnector(0);
     eulerAdapter = new MockEulerAdapter();
-    matching = new MockMatching(keccak256("MOCK_DOMAIN"));
     messenger = new MockLZMessenger();
 
     vault =
-      new CollarVault(address(this), ILiquidityVault(address(liquidityVault)), address(this), IEulerAdapter(address(eulerAdapter)), IMatching(address(matching)), l2Recipient, treasury);
+      new CollarVault(address(this), ILiquidityVault(address(liquidityVault)), address(this), IEulerAdapter(address(eulerAdapter)), l2Recipient, treasury);
 
     liquidityVault.grantRole(liquidityVault.VAULT_ROLE(), address(vault));
     vault.grantRole(vault.KEEPER_ROLE(), keeper);
@@ -80,10 +76,11 @@ contract CollarVaultTest is Test {
     CollarVault.Quote memory quote = _quote(1, borrower);
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
-    bytes32 guid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
-    uint256 createdLoanId = vault.createLoan(quote, sig, guid);
+    uint256 createdLoanId = vault.createLoan(quote, sig, depositGuid, tradeGuid);
     vm.stopPrank();
 
     assertEq(createdLoanId, loanId);
@@ -102,7 +99,7 @@ contract CollarVaultTest is Test {
 
     vm.startPrank(borrower);
     vm.expectRevert(CollarVault.CV_QuoteExpired.selector);
-    vault.createLoan(quote, sig, bytes32(0));
+    vault.createLoan(quote, sig, bytes32(0), bytes32(0));
     vm.stopPrank();
   }
 
@@ -113,7 +110,7 @@ contract CollarVaultTest is Test {
 
     vm.startPrank(borrower);
     vm.expectRevert(CollarVault.CV_InvalidQuoteSigner.selector);
-    vault.createLoan(quote, sig, bytes32(0));
+    vault.createLoan(quote, sig, bytes32(0), bytes32(0));
     vm.stopPrank();
   }
 
@@ -121,12 +118,13 @@ contract CollarVaultTest is Test {
     CollarVault.Quote memory quote = _quote(1, borrower);
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
-    bytes32 guid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
-    vault.createLoan(quote, sig, guid);
+    vault.createLoan(quote, sig, depositGuid, tradeGuid);
     vm.expectRevert(CollarVault.CV_QuoteUsed.selector);
-    vault.createLoan(quote, sig, bytes32(0));
+    vault.createLoan(quote, sig, bytes32(0), bytes32(0));
     vm.stopPrank();
   }
 
@@ -168,7 +166,9 @@ contract CollarVaultTest is Test {
         recipient: address(vault),
         subaccountId: vault.deriveSubaccountId(),
         socketMessageId: bytes32(0),
-        secondaryAmount: 0
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
       })
     );
 
@@ -198,7 +198,9 @@ contract CollarVaultTest is Test {
         recipient: address(vault),
         subaccountId: vault.deriveSubaccountId(),
         socketMessageId: bytes32(0),
-        secondaryAmount: 0
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
       })
     );
 
@@ -210,14 +212,15 @@ contract CollarVaultTest is Test {
     CollarVault.Quote memory quote = _quote(1, borrower);
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
-    bytes32 guid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
 
     vm.prank(borrower);
     vault.requestCancelDeposit(loanId);
 
     vm.startPrank(borrower);
     vm.expectRevert(CollarVault.CV_PendingDepositCancelled.selector);
-    vault.createLoan(quote, sig, guid);
+    vault.createLoan(quote, sig, depositGuid, tradeGuid);
     vm.stopPrank();
   }
 
@@ -236,7 +239,9 @@ contract CollarVaultTest is Test {
         recipient: address(vault),
         subaccountId: loan.subaccountId,
         socketMessageId: bytes32(0),
-        secondaryAmount: 0
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
       })
     );
 
@@ -277,7 +282,9 @@ contract CollarVaultTest is Test {
         recipient: address(vault),
         subaccountId: loan.subaccountId,
         socketMessageId: bytes32(0),
-        secondaryAmount: 0
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
       })
     );
 
@@ -307,7 +314,9 @@ contract CollarVaultTest is Test {
         recipient: address(vault),
         subaccountId: loan.subaccountId,
         socketMessageId: bytes32(0),
-        secondaryAmount: 0
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
       })
     );
 
@@ -335,7 +344,9 @@ contract CollarVaultTest is Test {
         recipient: address(vault),
         subaccountId: loan.subaccountId,
         socketMessageId: bytes32(0),
-        secondaryAmount: 0
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
       })
     );
 
@@ -371,7 +382,9 @@ contract CollarVaultTest is Test {
         recipient: address(vault),
         subaccountId: loan.subaccountId,
         socketMessageId: bytes32(0),
-        secondaryAmount: 0
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
       })
     );
 
@@ -408,7 +421,9 @@ contract CollarVaultTest is Test {
         recipient: address(vault),
         subaccountId: loan.subaccountId,
         socketMessageId: bytes32(0),
-        secondaryAmount: 0
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
       })
     );
 
@@ -447,7 +462,9 @@ contract CollarVaultTest is Test {
         recipient: address(vault),
         subaccountId: loan.subaccountId,
         socketMessageId: bytes32(0),
-        secondaryAmount: 0
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
       })
     );
 
@@ -464,10 +481,11 @@ contract CollarVaultTest is Test {
     quote.quoteExpiry = block.timestamp + expiryOffset;
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
-    bytes32 guid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
-    vault.createLoan(quote, sig, guid);
+    vault.createLoan(quote, sig, depositGuid, tradeGuid);
     vm.stopPrank();
   }
 
@@ -484,10 +502,11 @@ contract CollarVaultTest is Test {
     quote.maturity = block.timestamp + duration;
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
-    bytes32 guid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
-    uint256 createdLoanId = vault.createLoan(quote, sig, guid);
+    uint256 createdLoanId = vault.createLoan(quote, sig, depositGuid, tradeGuid);
     vm.stopPrank();
 
     uint256 annualFee = (uint256(principal) * feeApr) / 1e18;
@@ -501,11 +520,12 @@ contract CollarVaultTest is Test {
     quote.borrowAmount = 0;
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
-    bytes32 guid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
     vm.expectRevert(CollarLiquidityVault.LV_InvalidAmount.selector);
-    vault.createLoan(quote, sig, guid);
+    vault.createLoan(quote, sig, depositGuid, tradeGuid);
     vm.stopPrank();
   }
 
@@ -522,10 +542,11 @@ contract CollarVaultTest is Test {
     quote.borrowAmount = 500_000e6;
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
-    bytes32 guid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
-    uint256 createdLoanId = vault.createLoan(quote, sig, guid);
+    uint256 createdLoanId = vault.createLoan(quote, sig, depositGuid, tradeGuid);
     vm.stopPrank();
 
     assertEq(usdc.balanceOf(borrower), quote.borrowAmount);
@@ -536,10 +557,11 @@ contract CollarVaultTest is Test {
     CollarVault.Quote memory quote = _quote(1, borrower);
     bytes memory sig = _signQuote(quote);
     loanId = _requestDeposit(quote);
-    bytes32 guid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
+    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
-    uint256 createdLoanId = vault.createLoan(quote, sig, guid);
+    uint256 createdLoanId = vault.createLoan(quote, sig, depositGuid, tradeGuid);
     vm.stopPrank();
     assertEq(createdLoanId, loanId);
   }
@@ -587,7 +609,26 @@ contract CollarVaultTest is Test {
         recipient: address(vault),
         subaccountId: vault.deriveSubaccountId(),
         socketMessageId: bytes32(0),
-        secondaryAmount: 0
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
+      })
+    );
+  }
+
+  function _tradeConfirm(uint256 loanId, bytes32 quoteHash, uint256 takerNonce) internal returns (bytes32 guid) {
+    guid = _recordLZMessage(
+      CollarLZMessages.Message({
+        action: CollarLZMessages.Action.TradeConfirmed,
+        loanId: loanId,
+        asset: address(0),
+        amount: 0,
+        recipient: address(vault),
+        subaccountId: vault.deriveSubaccountId(),
+        socketMessageId: bytes32(0),
+        secondaryAmount: 0,
+        quoteHash: quoteHash,
+        takerNonce: takerNonce
       })
     );
   }

@@ -17,6 +17,10 @@ import {ICollarTSA} from "../interfaces/ICollarTSA.sol";
 import {ISocketMessageTracker} from "../interfaces/ISocketMessageTracker.sol";
 import {CollarLZMessages} from "./CollarLZMessages.sol";
 
+interface IRfqNonceTracker {
+  function usedNonces(address owner, uint256 nonce) external view returns (bool);
+}
+
 /// @notice L2 receiver for LayerZero metadata messages.
 contract CollarTSAReceiver is AccessControl, OApp {
   using SafeERC20 for IERC20;
@@ -48,6 +52,8 @@ contract CollarTSAReceiver is AccessControl, OApp {
   error CTR_MessageNotFound();
   error CTR_MessageAlreadyHandled();
   error CTR_SocketNotFinalized();
+  error CTR_RfqModuleNotSet();
+  error CTR_RfqTradeNotConfirmed();
 
   constructor(
     address admin,
@@ -155,7 +161,9 @@ contract CollarTSAReceiver is AccessControl, OApp {
       recipient: vaultRecipient,
       subaccountId: tsa.subAccount(),
       socketMessageId: socketMessageId,
-      secondaryAmount: collateralSold
+      secondaryAmount: collateralSold,
+      quoteHash: bytes32(0),
+      takerNonce: 0
     });
 
     return _send(message, defaultOptions);
@@ -178,7 +186,42 @@ contract CollarTSAReceiver is AccessControl, OApp {
       recipient: vaultRecipient,
       subaccountId: tsa.subAccount(),
       socketMessageId: socketMessageId,
-      secondaryAmount: 0
+      secondaryAmount: 0,
+      quoteHash: bytes32(0),
+      takerNonce: 0
+    });
+
+    return _send(message, defaultOptions);
+  }
+
+  function sendTradeConfirmed(uint256 loanId, bytes32 quoteHash, uint256 takerNonce)
+    external
+    payable
+    onlyRole(KEEPER_ROLE)
+    returns (MessagingReceipt memory)
+  {
+    if (vaultRecipient == address(0)) {
+      revert CTR_InvalidRecipient();
+    }
+    (, , , , address rfqModule, ) = tsa.getCollarTSAAddresses();
+    if (rfqModule == address(0)) {
+      revert CTR_RfqModuleNotSet();
+    }
+    if (!IRfqNonceTracker(rfqModule).usedNonces(address(tsa), takerNonce)) {
+      revert CTR_RfqTradeNotConfirmed();
+    }
+
+    CollarLZMessages.Message memory message = CollarLZMessages.Message({
+      action: CollarLZMessages.Action.TradeConfirmed,
+      loanId: loanId,
+      asset: address(0),
+      amount: 0,
+      recipient: vaultRecipient,
+      subaccountId: tsa.subAccount(),
+      socketMessageId: bytes32(0),
+      secondaryAmount: 0,
+      quoteHash: quoteHash,
+      takerNonce: takerNonce
     });
 
     return _send(message, defaultOptions);
@@ -264,7 +307,9 @@ contract CollarTSAReceiver is AccessControl, OApp {
       recipient: origin.recipient,
       subaccountId: tsa.subAccount(),
       socketMessageId: origin.socketMessageId,
-      secondaryAmount: 0
+      secondaryAmount: 0,
+      quoteHash: bytes32(0),
+      takerNonce: 0
     });
 
     _send(message, defaultOptions);

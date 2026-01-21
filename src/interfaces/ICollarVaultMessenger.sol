@@ -28,6 +28,8 @@ interface ICollarVaultMessenger {
       address recipient,
       uint256 subaccountId,
       bytes32 socketMessageId,
-      uint256 secondaryAmount
+      uint256 secondaryAmount,
+      bytes32 quoteHash,
+      uint256 takerNonce
     );
 }

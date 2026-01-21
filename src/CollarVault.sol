@@ -3,15 +3,12 @@ pragma solidity ^0.8.20;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
-import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IMatching} from "v2-matching/src/interfaces/IMatching.sol";
 import {MessagingFee, MessagingReceipt} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
 import {IEulerAdapter} from "./interfaces/IEulerAdapter.sol";
@@ -27,8 +24,7 @@ interface ILiquidityVault {
   function asset() external view returns (address);
 }
 
-/// TODO: Spec calls for BaseOnChainSigningTSA inheritance; confirm if a proxy-based TSA should replace this signer module.
-contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGuard {
+contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
   using SafeERC20 for IERC20;
 
   bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
@@ -36,10 +32,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   bytes32 public constant PARAMETER_ROLE = keccak256("PARAMETER_ROLE");
   bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
   bytes32 public constant QUOTE_SIGNER_ROLE = keccak256("QUOTE_SIGNER_ROLE");
-  bytes32 public constant SIGNER_ROLE = keccak256("SIGNER_ROLE");
-  bytes32 public constant SUBMITTER_ROLE = keccak256("SUBMITTER_ROLE");
-
-  bytes4 internal constant MAGICVALUE = 0x1626ba7e;
   uint256 public constant YEAR = 365 days;
   uint256 public constant MAX_BPS = 10_000;
 
@@ -108,7 +100,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
 
   mapping(address => SocketBridgeConfig) private socketBridgeConfigs;
   IEulerAdapter public eulerAdapter;
-  IMatching public matching;
   address public l2Recipient;
   address public treasury;
   uint256 public treasuryBps;
@@ -121,9 +112,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   mapping(bytes32 => bool) public usedQuotes;
   mapping(address => bool) public collateralAllowed;
   mapping(address => uint256) public strikeScale;
-
-  mapping(bytes32 => bool) public signedData;
-  bool public signaturesDisabled;
 
   ICollarVaultMessenger public lzMessenger;
   mapping(bytes32 => bool) public lzMessageConsumed;
@@ -138,14 +126,11 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   error CV_QuoteExpired();
   error CV_QuoteUsed();
   error CV_InvalidQuoteSigner();
-  error CV_InvalidSignature();
   error CV_InvalidLoanState();
   error CV_InsufficientSettlement();
   error CV_TreasuryBpsTooHigh();
   error CV_NotBorrower();
   error CV_InvalidSubaccount();
-  error CV_ActionExpired();
-  error CV_MatchingNotSet();
   error CV_NotAuthorized();
   error CV_InsufficientBridgeFees();
   error CV_RefundFailed();
@@ -188,14 +173,8 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   );
   event L2RecipientUpdated(address indexed recipient);
   event EulerAdapterUpdated(address indexed adapter);
-  event MatchingUpdated(address indexed matching);
   event SubaccountUpdated(uint256 subaccountId);
   event QuoteSignerUpdated(address indexed signer, bool allowed);
-  event SignerUpdated(address indexed signer, bool allowed);
-  event SubmitterUpdated(address indexed submitter, bool allowed);
-  event SignaturesDisabledUpdated(bool disabled);
-  event ActionSigned(address indexed signer, bytes32 indexed hash, IMatching.Action action);
-  event SignatureRevoked(address indexed signer, bytes32 indexed hash);
   event LZMessengerUpdated(address indexed messenger);
   event CollateralDepositRequested(
     uint256 indexed loanId,
@@ -225,7 +204,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     ILiquidityVault liquidityVault_,
     address bridgeConfigAdmin_,
     IEulerAdapter eulerAdapter_,
-    IMatching matching_,
     address l2Recipient_,
     address treasury_
   ) EIP712("CollarVault", "1") {
@@ -234,7 +212,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
       address(liquidityVault_) == address(0) ||
       bridgeConfigAdmin_ == address(0) ||
       address(eulerAdapter_) == address(0) ||
-      address(matching_) == address(0) ||
       l2Recipient_ == address(0) ||
       treasury_ == address(0)
     ) {
@@ -244,7 +221,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     liquidityVault = liquidityVault_;
     usdc = IERC20(liquidityVault_.asset());
     eulerAdapter = eulerAdapter_;
-    matching = matching_;
     l2Recipient = l2Recipient_;
     treasury = treasury_;
 
@@ -257,7 +233,7 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   }
 
   /// @notice Create a new zero-cost loan using an EIP-712 signed RFQ quote.
-  function createLoan(Quote calldata quote, bytes calldata quoteSig, bytes32 lzGuid)
+  function createLoan(Quote calldata quote, bytes calldata quoteSig, bytes32 depositGuid, bytes32 tradeGuid)
     external
     nonReentrant
     whenNotPaused
@@ -271,40 +247,9 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
       revert CV_InvalidMaturity();
     }
     _validateBorrowAmount(quote);
-    loanId = _consumeDepositConfirmed(quote, lzGuid);
-    loans[loanId] = Loan({
-      borrower: msg.sender,
-      collateralAsset: quote.collateralAsset,
-      collateralAmount: quote.collateralAmount,
-      maturity: quote.maturity,
-      putStrike: quote.putStrike,
-      callStrike: quote.callStrike,
-      principal: quote.borrowAmount,
-      subaccountId: deriveSubaccountId,
-      state: LoanState.ACTIVE_ZERO_COST,
-      startTime: block.timestamp,
-      originationFeeApr: originationFeeApr,
-      variableDebt: 0
-    });
-    bytes32 quoteHash = hashQuote(quote);
-    usedQuotes[quoteHash] = true;
-
-    // TODO: Verify Derive trade execution before disbursing when trade verification is specified.
-    liquidityVault.borrow(quote.borrowAmount);
-    usdc.safeTransfer(msg.sender, quote.borrowAmount);
-
-    emit LoanCreated(
-      loanId,
-      msg.sender,
-      quote.collateralAsset,
-      quote.collateralAmount,
-      quote.maturity,
-      quote.putStrike,
-      quote.callStrike,
-      quote.borrowAmount,
-      deriveSubaccountId,
-      quoteHash
-    );
+    bytes32 quoteHash;
+    (loanId, quoteHash) = _confirmLoanCreation(quote, depositGuid, tradeGuid);
+    _openLoan(loanId, quote, quoteHash);
   }
 
   /// @notice Request collateral deposit to Derive L2 and send a LayerZero deposit intent.
@@ -356,7 +301,9 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
       recipient: address(this),
       subaccountId: deriveSubaccountId,
       socketMessageId: socketMessageId,
-      secondaryAmount: 0
+      secondaryAmount: 0,
+      quoteHash: bytes32(0),
+      takerNonce: 0
     });
 
     bytes memory options = lzMessenger.defaultOptions();
@@ -421,7 +368,9 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
       recipient: address(this),
       subaccountId: deriveSubaccountId,
       socketMessageId: bytes32(0),
-      secondaryAmount: 0
+      secondaryAmount: 0,
+      quoteHash: bytes32(0),
+      takerNonce: 0
     });
 
     bytes memory options = lzMessenger.defaultOptions();
@@ -699,14 +648,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     return _hashTypedDataV4(structHash);
   }
 
-  /// @notice Returns the EIP-712 hash for a Derive action.
-  function getActionTypedDataHash(IMatching.Action memory action) public view returns (bytes32) {
-    if (address(matching) == address(0)) {
-      revert CV_MatchingNotSet();
-    }
-    return MessageHashUtils.toTypedDataHash(matching.domainSeparator(), matching.getActionHash(action));
-  }
-
   /// @notice Return a loan record by id.
   function getLoan(uint256 loanId) external view returns (Loan memory) {
     return loans[loanId];
@@ -724,34 +665,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     uint256 annualFee = Math.mulDiv(loan.principal, loan.originationFeeApr, 1e18);
     uint256 duration = loan.maturity - loan.startTime;
     return Math.mulDiv(annualFee, duration, YEAR);
-  }
-
-  /// @notice Record an action hash as signed by an authorized signer.
-  function signActionData(IMatching.Action memory action, bytes memory extraData) external onlyRole(SIGNER_ROLE) {
-    _signActionData(action, extraData);
-  }
-
-  /// @notice Record an action hash via a submitter using a signer signature.
-  function signActionViaPermit(IMatching.Action memory action, bytes memory extraData, bytes memory signerSig)
-    external
-    onlyRole(SUBMITTER_ROLE)
-  {
-    bytes32 hash = getActionTypedDataHash(action);
-    address recovered = ECDSA.recover(hash, signerSig);
-    if (!hasRole(SIGNER_ROLE, recovered)) {
-      revert CV_InvalidSignature();
-    }
-    _signActionData(action, extraData);
-  }
-
-  /// @notice Revoke a previously signed action.
-  function revokeActionSignature(IMatching.Action memory action) external onlyRole(SIGNER_ROLE) {
-    _revokeSignature(getActionTypedDataHash(action));
-  }
-
-  /// @notice Revoke a signature by hash.
-  function revokeSignature(bytes32 typedDataHash) external onlyRole(SIGNER_ROLE) {
-    _revokeSignature(typedDataHash);
   }
 
   /// @notice Update the L2 recipient for bridge transfers.
@@ -792,15 +705,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     }
     eulerAdapter = newAdapter;
     emit EulerAdapterUpdated(address(newAdapter));
-  }
-
-  /// @notice Update the Derive matching contract reference.
-  function setMatching(IMatching newMatching) external onlyRole(PARAMETER_ROLE) {
-    if (address(newMatching) == address(0)) {
-      revert CV_ZeroAddress();
-    }
-    matching = newMatching;
-    emit MatchingUpdated(address(newMatching));
   }
 
   /// @notice Update the Derive subaccount id used for action validation.
@@ -864,38 +768,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     emit QuoteSignerUpdated(signer, allowed);
   }
 
-  /// @notice Allow or revoke a signer for Derive actions.
-  function setSigner(address signer, bool allowed) external onlyRole(PARAMETER_ROLE) {
-    if (signer == address(0)) {
-      revert CV_ZeroAddress();
-    }
-    if (allowed) {
-      _grantRole(SIGNER_ROLE, signer);
-    } else {
-      _revokeRole(SIGNER_ROLE, signer);
-    }
-    emit SignerUpdated(signer, allowed);
-  }
-
-  /// @notice Allow or revoke a submitter for Derive actions.
-  function setSubmitter(address submitter, bool allowed) external onlyRole(PARAMETER_ROLE) {
-    if (submitter == address(0)) {
-      revert CV_ZeroAddress();
-    }
-    if (allowed) {
-      _grantRole(SUBMITTER_ROLE, submitter);
-    } else {
-      _revokeRole(SUBMITTER_ROLE, submitter);
-    }
-    emit SubmitterUpdated(submitter, allowed);
-  }
-
-  /// @notice Disable or enable ERC-1271 signature validation.
-  function setSignaturesDisabled(bool disabled) external onlyRole(PARAMETER_ROLE) {
-    signaturesDisabled = disabled;
-    emit SignaturesDisabledUpdated(disabled);
-  }
-
   /// @notice Update the LayerZero messenger used to validate L2 acknowledgements.
   function setLZMessenger(ICollarVaultMessenger messenger) external onlyRole(PARAMETER_ROLE) {
     if (address(messenger) == address(0)) {
@@ -913,14 +785,6 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
   /// @notice Unpause loan creation and settlement.
   function unpause() external onlyRole(PAUSER_ROLE) {
     _unpause();
-  }
-
-  /// @notice ERC-1271 signature validation.
-  function isValidSignature(bytes32 hash, bytes memory) external view override returns (bytes4) {
-    if (!signaturesDisabled && signedData[hash]) {
-      return MAGICVALUE;
-    }
-    return bytes4(0);
   }
 
   function _validateQuote(Quote calldata quote, bytes calldata quoteSig, address expectedBorrower) internal view {
@@ -951,6 +815,58 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     }
   }
 
+  function _confirmLoanCreation(Quote calldata quote, bytes32 depositGuid, bytes32 tradeGuid)
+    internal
+    returns (uint256 loanId, bytes32 quoteHash)
+  {
+    quoteHash = hashQuote(quote);
+    if (depositGuid == tradeGuid) {
+      revert CV_LZMessageMismatch();
+    }
+    CollarLZMessages.Message memory depositMessage = _loadLZMessage(depositGuid);
+    CollarLZMessages.Message memory tradeMessage = _loadLZMessage(tradeGuid);
+    loanId = _validateDepositConfirmed(depositMessage, quote);
+    _validateTradeConfirmed(tradeMessage, loanId, quoteHash, quote.nonce);
+
+    lzMessageConsumed[depositGuid] = true;
+    lzMessageConsumed[tradeGuid] = true;
+    delete pendingDeposits[loanId];
+  }
+
+  function _openLoan(uint256 loanId, Quote calldata quote, bytes32 quoteHash) internal {
+    loans[loanId] = Loan({
+      borrower: msg.sender,
+      collateralAsset: quote.collateralAsset,
+      collateralAmount: quote.collateralAmount,
+      maturity: quote.maturity,
+      putStrike: quote.putStrike,
+      callStrike: quote.callStrike,
+      principal: quote.borrowAmount,
+      subaccountId: deriveSubaccountId,
+      state: LoanState.ACTIVE_ZERO_COST,
+      startTime: block.timestamp,
+      originationFeeApr: originationFeeApr,
+      variableDebt: 0
+    });
+    usedQuotes[quoteHash] = true;
+
+    liquidityVault.borrow(quote.borrowAmount);
+    usdc.safeTransfer(msg.sender, quote.borrowAmount);
+
+    emit LoanCreated(
+      loanId,
+      msg.sender,
+      quote.collateralAsset,
+      quote.collateralAmount,
+      quote.maturity,
+      quote.putStrike,
+      quote.callStrike,
+      quote.borrowAmount,
+      deriveSubaccountId,
+      quoteHash
+    );
+  }
+
   function _convertToVariable(uint256 loanId, uint256 collateralAmount) internal {
     Loan storage loan = loans[loanId];
     if (collateralAmount != loan.collateralAmount) {
@@ -979,32 +895,7 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     config.bridge.bridge{value: fee}(receiver, amount, config.msgGasLimit, address(config.connector), config.extraData, config.options);
   }
 
-  function _signActionData(IMatching.Action memory action, bytes memory extraData) internal {
-    bytes32 hash = getActionTypedDataHash(action);
-    if (action.signer != address(this)) {
-      revert CV_InvalidSignature();
-    }
-    _verifyAction(action, hash, extraData);
-    signedData[hash] = true;
-    emit ActionSigned(action.signer, hash, action);
-  }
-
-  function _revokeSignature(bytes32 hash) internal {
-    signedData[hash] = false;
-    emit SignatureRevoked(msg.sender, hash);
-  }
-
-  function _verifyAction(IMatching.Action memory action, bytes32, bytes memory) internal view {
-    if (deriveSubaccountId == 0 || action.subaccountId != deriveSubaccountId) {
-      revert CV_InvalidSubaccount();
-    }
-    if (action.expiry < block.timestamp) {
-      revert CV_ActionExpired();
-    }
-    // TODO: Add strategy-specific checks once strike bounds and risk limits are specified.
-  }
-
-  function _consumeLZMessage(bytes32 guid) internal returns (CollarLZMessages.Message memory message) {
+  function _loadLZMessage(bytes32 guid) internal view returns (CollarLZMessages.Message memory message) {
     if (address(lzMessenger) == address(0)) {
       revert CV_LZMessengerNotSet();
     }
@@ -1019,14 +910,15 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
       address recipient,
       uint256 subaccountId,
       bytes32 socketMessageId,
-      uint256 secondaryAmount
+      uint256 secondaryAmount,
+      bytes32 quoteHash,
+      uint256 takerNonce
     ) = lzMessenger.receivedMessages(guid);
 
     if (loanId == 0) {
       revert CV_LZMessageNotFound();
     }
 
-    lzMessageConsumed[guid] = true;
     message = CollarLZMessages.Message({
       action: action,
       loanId: loanId,
@@ -1035,12 +927,22 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
       recipient: recipient,
       subaccountId: subaccountId,
       socketMessageId: socketMessageId,
-      secondaryAmount: secondaryAmount
+      secondaryAmount: secondaryAmount,
+      quoteHash: quoteHash,
+      takerNonce: takerNonce
     });
   }
 
-  function _consumeDepositConfirmed(Quote calldata quote, bytes32 lzGuid) internal returns (uint256 loanId) {
-    CollarLZMessages.Message memory lzMessage = _consumeLZMessage(lzGuid);
+  function _consumeLZMessage(bytes32 guid) internal returns (CollarLZMessages.Message memory message) {
+    message = _loadLZMessage(guid);
+    lzMessageConsumed[guid] = true;
+  }
+
+  function _validateDepositConfirmed(CollarLZMessages.Message memory lzMessage, Quote calldata quote)
+    internal
+    view
+    returns (uint256 loanId)
+  {
     if (
       lzMessage.action != CollarLZMessages.Action.DepositConfirmed ||
       lzMessage.asset != quote.collateralAsset ||
@@ -1073,7 +975,26 @@ contract CollarVault is AccessControl, EIP712, IERC1271, Pausable, ReentrancyGua
     ) {
       revert CV_LZMessageMismatch();
     }
-    delete pendingDeposits[loanId];
+  }
+
+  function _validateTradeConfirmed(
+    CollarLZMessages.Message memory lzMessage,
+    uint256 loanId,
+    bytes32 quoteHash,
+    uint256 takerNonce
+  ) internal view {
+    if (lzMessage.action != CollarLZMessages.Action.TradeConfirmed || lzMessage.loanId != loanId) {
+      revert CV_LZMessageMismatch();
+    }
+    if (lzMessage.recipient != address(this)) {
+      revert CV_LZMessageRecipientMismatch();
+    }
+    if (deriveSubaccountId != 0 && lzMessage.subaccountId != deriveSubaccountId) {
+      revert CV_LZMessageMismatch();
+    }
+    if (lzMessage.quoteHash != quoteHash || lzMessage.takerNonce != takerNonce) {
+      revert CV_LZMessageMismatch();
+    }
   }
 
   modifier onlyKeeperOrExecutor() {

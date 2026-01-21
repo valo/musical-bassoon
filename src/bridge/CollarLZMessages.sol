@@ -8,7 +8,8 @@ library CollarLZMessages {
     ReturnRequest,
     SettlementReport,
     DepositConfirmed,
-    CollateralReturned
+    CollateralReturned,
+    TradeConfirmed
   }
 
   struct Message {
@@ -20,5 +21,7 @@ library CollarLZMessages {
     uint256 subaccountId;
     bytes32 socketMessageId;
     uint256 secondaryAmount;
+    bytes32 quoteHash;
+    uint256 takerNonce;
   }
 }

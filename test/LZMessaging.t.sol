@@ -71,17 +71,27 @@ contract MockSocketMessageTracker is ISocketMessageTracker {
   }
 }
 
+contract MockRfqModule {
+  mapping(address => mapping(uint256 => bool)) public usedNonces;
+
+  function setUsedNonce(address owner, uint256 nonce, bool value) external {
+    usedNonces[owner][nonce] = value;
+  }
+}
+
 contract MockCollarTSA is ICollarTSA {
   IActionVerifier.Action public lastAction;
   address public depositModule;
   address public withdrawalModule;
+  address public rfqModule;
   address public wrappedDepositAsset;
   uint256 public subaccountId;
   CollarTSAParams private params;
 
-  constructor(address wrappedDepositAsset_) {
+  constructor(address wrappedDepositAsset_, address rfqModule_) {
     depositModule = address(0x1234);
     withdrawalModule = address(0x5678);
+    rfqModule = rfqModule_;
     wrappedDepositAsset = wrappedDepositAsset_;
     subaccountId = 1;
     params.minSignatureExpiry = 1 minutes;
@@ -105,7 +115,7 @@ contract MockCollarTSA is ICollarTSA {
     view
     returns (address, address, address, address, address, address)
   {
-    return (address(0), depositModule, withdrawalModule, address(0), address(0), address(0));
+    return (address(0), depositModule, withdrawalModule, address(0), rfqModule, address(0));
   }
 
   function getBaseTSAAddresses()
@@ -126,6 +136,7 @@ contract LZMessagingTest is Test {
   CollarTSAReceiver internal receiver;
   MockSocketMessageTracker internal socket;
   MockCollarTSA internal tsa;
+  MockRfqModule internal rfqModule;
   MockERC20 internal token;
   MockEndpointV2 internal endpointL1;
   MockEndpointV2 internal endpointL2;
@@ -140,7 +151,8 @@ contract LZMessagingTest is Test {
 
     token = new MockERC20("Mock", "MOCK", 18);
     socket = new MockSocketMessageTracker();
-    tsa = new MockCollarTSA(address(token));
+    rfqModule = new MockRfqModule();
+    tsa = new MockCollarTSA(address(token), address(rfqModule));
 
     messenger = new CollarVaultMessenger(address(this), address(this), address(endpointL1), L2_EID);
     receiver = new CollarTSAReceiver(address(this), address(endpointL2), socket, tsa, L1_EID);
@@ -171,7 +183,7 @@ contract LZMessagingTest is Test {
 
     _deliverToReceiver(receipt.guid, message);
 
-    (CollarLZMessages.Action action, uint256 loanId,, , , , ,) = receiver.pendingMessages(receipt.guid);
+    (CollarLZMessages.Action action, uint256 loanId,, , , , , , ,) = receiver.pendingMessages(receipt.guid);
     assertEq(loanId, message.loanId);
     assertEq(uint8(action), uint8(message.action));
   }
@@ -206,7 +218,7 @@ contract LZMessagingTest is Test {
 
     _deliverToMessenger(endpointL2.lastGuid(), ackMessage);
 
-    (CollarLZMessages.Action storedAction, uint256 storedLoanId,, , , , ,) =
+    (CollarLZMessages.Action storedAction, uint256 storedLoanId,, , , , , , ,) =
       messenger.receivedMessages(endpointL2.lastGuid());
     assertEq(storedLoanId, message.loanId);
     assertEq(uint8(storedAction), uint8(CollarLZMessages.Action.DepositConfirmed));
@@ -237,6 +249,39 @@ contract LZMessagingTest is Test {
     assertEq(action.nonce, uint256(receipt.guid));
   }
 
+  function testSendTradeConfirmedRequiresUsedNonce() public {
+    bytes32 quoteHash = keccak256("quote");
+    uint256 takerNonce = 42;
+
+    vm.expectRevert(CollarTSAReceiver.CTR_RfqTradeNotConfirmed.selector);
+    receiver.sendTradeConfirmed{value: 1}(1, quoteHash, takerNonce);
+  }
+
+  function testSendTradeConfirmedStoresOnL1() public {
+    bytes32 quoteHash = keccak256("quote");
+    uint256 takerNonce = 42;
+
+    rfqModule.setUsedNonce(address(tsa), takerNonce, true);
+
+    receiver.sendTradeConfirmed{value: 1}(1, quoteHash, takerNonce);
+
+    CollarLZMessages.Message memory tradeMessage =
+      abi.decode(endpointL2.lastMessage(), (CollarLZMessages.Message));
+    assertEq(uint8(tradeMessage.action), uint8(CollarLZMessages.Action.TradeConfirmed));
+    assertEq(tradeMessage.loanId, 1);
+    assertEq(tradeMessage.recipient, vaultRecipient);
+    assertEq(tradeMessage.quoteHash, quoteHash);
+    assertEq(tradeMessage.takerNonce, takerNonce);
+
+    _deliverToMessenger(endpointL2.lastGuid(), tradeMessage);
+
+    (, uint256 storedLoanId,, , , , , , bytes32 storedQuoteHash, uint256 storedTakerNonce) =
+      messenger.receivedMessages(endpointL2.lastGuid());
+    assertEq(storedLoanId, 1);
+    assertEq(storedQuoteHash, quoteHash);
+    assertEq(storedTakerNonce, takerNonce);
+  }
+
   function testSendCollateralReturnedStoresOnL1() public {
     bytes32 socketMessageId = bytes32(uint256(300));
 
@@ -253,7 +298,7 @@ contract LZMessagingTest is Test {
 
     _deliverToMessenger(endpointL2.lastGuid(), returnedMessage);
 
-    (CollarLZMessages.Action storedAction, uint256 storedLoanId,, , , , bytes32 storedSocketMessageId,) =
+    (CollarLZMessages.Action storedAction, uint256 storedLoanId,, , , , bytes32 storedSocketMessageId,, ,) =
       messenger.receivedMessages(endpointL2.lastGuid());
     assertEq(uint8(storedAction), uint8(CollarLZMessages.Action.CollateralReturned));
     assertEq(storedLoanId, 1);
@@ -273,7 +318,9 @@ contract LZMessagingTest is Test {
       recipient: address(this),
       subaccountId: tsa.subAccount(),
       socketMessageId: socketMessageId,
-      secondaryAmount: 0
+      secondaryAmount: 0,
+      quoteHash: bytes32(0),
+      takerNonce: 0
     });
   }
 
