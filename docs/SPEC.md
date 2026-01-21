@@ -40,11 +40,15 @@ When a borrower requests a new loan, the vault contract receives collateral (sta
 
 Because RFQ pricing on Derive requires collateral in the subaccount, the loan lifecycle is asynchronous: collateral must be confirmed on L2 before quotes are finalized and the loan is disbursed on L1.
 
-If the RFQ is unfavorable or the borrower cancels before options are opened, the borrower can request a collateral withdrawal. The executor triggers a Withdrawal Module action and bridges the collateral back to L1; the vault releases funds to the borrower once the bridge completes. Withdrawals are disallowed once options have been opened.
+To minimize trust assumptions, the vault sends a LayerZero message alongside the Socket bridge transfer containing the Socket `messageId` and deposit metadata (loanId, asset, amount, subaccountId). A dedicated L2 receiver stores the message and only signs a Deposit Module action once the Socket transfer is confirmed. The L2 receiver then sends a LayerZero `DepositConfirmed` acknowledgment (including the vault recipient, asset and amount) back to L1 so the vault can finalize state without relying on an off-chain relayer.
+
+If the RFQ is unfavorable or the borrower cancels before options are opened, the borrower can request a collateral withdrawal. The L1 vault sends a `CancelRequest` LayerZero message to the L2 receiver, which signs a Withdrawal Module action. The executor submits the withdrawal and bridges the collateral back to L1. The L2 receiver sends a `CollateralReturned` LayerZero message including the Socket `messageId` so L1 can finalize once the bridge completes. Withdrawals are disallowed once options have been opened.
 
 ### 3.2 Collateral withdrawal (L2 -> L1)
 
 Upon loan maturity or refinance, the vault executor uses the Withdrawal Module to withdraw collateral or USDC from the subaccount. The fast bridge is used to send funds back to the vault on L1. The vault contract waits for the bridged funds before updating liquidity balances.
+
+LayerZero messages are used to relay withdrawal requests and settlement reports (including the Socket `messageId`) between L1 and L2. For withdrawals, L2 sends a `CollateralReturned` message once the L2->L1 Socket bridge is initiated so L1 can finalize state based on bridge confirmation instead of off-chain attestations. L1 finalization consumes these LayerZero messages and is executed via an L1 transaction (borrower or keeper pays gas).
 
 ### 3.3 Deposit/withdraw handlers
 
@@ -105,9 +109,9 @@ Derive provides various strategy contracts (e.g., CCTSA for covered calls, PPTSA
 
 No partial fills are allowed; the orders must be fully matched. The trade must conform to risk limits (e.g., delta within bounds) enforced by the strategy contract. Derive matches the order against market makers and settles the trade, crediting or debiting the subaccount accordingly.
 
-**Loan disbursement**: On L1, after the Derive trade is confirmed, the vault contract withdraws USDC from the liquidity vault (Euler pool) equal to `D` and transfers it to the borrower. It records loan state `ACTIVE_ZERO_COST`, storing a global sequential `loanId`, `Q`, `K_p`, `K_c`, `t`, principal `D` and subaccount ID. Origination fees are annualized (e.g., 0.5% APR) and funded from option premium/settlement proceeds (collection timing TBD).
+**Loan disbursement**: On L1, `createLoan` consumes the `DepositConfirmed` LayerZero message for the matching `loanId` (recipient must be the vault, asset/amount must match). After the Derive trade is confirmed, the vault contract withdraws USDC from the liquidity vault (Euler pool) equal to `D` and transfers it to the borrower. It records loan state `ACTIVE_ZERO_COST`, storing a global sequential `loanId`, `Q`, `K_p`, `K_c`, `t`, principal `D` and subaccount ID. Origination fees are annualized (e.g., 0.5% APR) and funded from option premium/settlement proceeds (collection timing TBD).
 
-**Cancellation before trade**: If the RFQ is rejected or expires before the collar is opened, the borrower can cancel and withdraw collateral once it is bridged back from L2. The vault records a cancelled state and prevents subsequent loan creation with that pending deposit.
+**Cancellation before trade**: If the RFQ is rejected or expires before the collar is opened, the borrower calls `requestCancelDeposit(loanId)` on L1. The vault sends a `CancelRequest` LayerZero message to L2, and the receiver signs a Withdrawal Module action. After the collateral is bridged back to L1, the L2 receiver sends a `CollateralReturned` message; an L1 transaction consumes it, clears the pending deposit, and transfers the collateral back to the borrower. No variable loan is opened for cancelled deposits, and subsequent loan creation with that pending deposit is prevented.
 
 ### 5.2 Maturity settlement
 
@@ -124,7 +128,7 @@ At maturity `t`, the executor (or a keeper) settles the collar position on Deriv
 #### Outcome 2: Neutral corridor (`K_p <= S_t <= K_c`)
 
 - Both options expire OTM. The collateral remains on Derive and is not encumbered.
-- The vault contract bridges the collateral back to L1 via the fast bridge.
+- The vault contract bridges the collateral back to L1 via the fast bridge. The L2 receiver sends a `CollateralReturned` message with the Socket `messageId` so L1 can finalize the conversion once the bridge completes.
 - On L1, the collateral is deposited into the Euler V2 market as standard collateral. The borrower may immediately borrow USDC up to a variable rate (subject to Euler's LTV). This variable-rate loan repays the original principal `D`, converting the zero-cost loan to a `VARIABLE` loan.
 - The borrower's position remains liquidatable by Euler if the collateral price drops.
 
@@ -167,8 +171,9 @@ Owns the Derive subaccount and calls deposit/withdraw modules via off-chain acti
 Provides functions:
 
 - `requestCollateralDeposit(collateralAsset, collateralAmount, maturity)` - permissionless; receives collateral, calls the bridge, and records a pending deposit awaiting L2 confirmation.
+- `requestCancelDeposit(loanId)` - permissionless for the borrower while the deposit is pending; sends a `CancelRequest` message to L2 to initiate withdrawal.
 - `createLoan(collateralAsset, collateralAmount, maturity, Kp, borrowAmount)` - permissionless; only after L2 confirmation and RFQ; triggers trade actions via executor and disburses the loan.
-- `cancelPendingDeposit(depositId)` - permissionless for the borrower while no options are opened; triggers L2 withdrawal and returns collateral after bridge finality.
+- `finalizeDepositReturn(loanId, lzGuid)` - permissionless; consumes the L2 `CollateralReturned` message for a pending deposit and transfers collateral back to the borrower.
 - `settleLoan(loanId)` - restricted to keeper/executor roles; closes positions and initiates bridging of proceeds.
 - `convertToVariable(loanId)` - restricted to keeper/executor roles; bridges collateral back and interacts with Euler.
 - `rollLoanToNew(loanId, newKp, newMaturity)` - restricted to keeper/executor roles; repays variable debt and opens a new collar.

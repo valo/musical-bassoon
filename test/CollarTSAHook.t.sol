@@ -157,8 +157,6 @@ contract CollarTSAHookTest is Test {
     assertEq(address(action.module), address(0x1234));
 
     assertEq(uint256(hook.loanStatus(LOAN_ID, uint8(CollarTSAHook.ActionType.DepositCollateral))), uint256(CollarTSAHook.Status.Received));
-    (, , , , , , , bool success) = hook.receipts(messageId);
-    assertTrue(success);
   }
 
   function testDstPostHookDepositFailureFallsBack() public {
@@ -184,8 +182,6 @@ contract CollarTSAHookTest is Test {
 
     assertEq(token.balanceOf(address(tsa)), amount);
     assertEq(uint256(hook.loanStatus(LOAN_ID, uint8(CollarTSAHook.ActionType.DepositCollateral))), uint256(CollarTSAHook.Status.Failed));
-    (, , , , , , , bool success) = hook.receipts(messageId);
-    assertFalse(success);
   }
 
   function testDstPostHookTransferSuccess() public {
@@ -210,8 +206,6 @@ contract CollarTSAHookTest is Test {
 
     assertEq(token.balanceOf(recipient), amount);
     assertEq(uint256(hook.loanStatus(LOAN_ID, uint8(CollarTSAHook.ActionType.SettleUSDC))), uint256(CollarTSAHook.Status.Received));
-    (, , , , , , , bool success) = hook.receipts(messageId);
-    assertTrue(success);
   }
 
   function testSrcPostHookSetsSent() public {

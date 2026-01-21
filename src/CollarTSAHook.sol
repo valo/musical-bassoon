@@ -79,25 +79,12 @@ contract CollarTSAHook is HookBase {
     uint256 subaccountId;
   }
 
-  struct Receipt {
-    ActionType actionType;
-    uint256 loanId;
-    address asset;
-    uint256 amount;
-    address recipient;
-    bytes32 messageId;
-    uint64 timestamp;
-    bool success;
-  }
-
   uint256 public constant ACTION_DATA_LENGTH = 32 * 6;
 
   address public tsa;
   address public fallbackRecipient;
 
   mapping(uint256 => mapping(uint8 => Status)) public loanStatus;
-  mapping(bytes32 => Receipt) public receipts;
-
   event HookSent(uint256 indexed loanId, ActionType actionType, address asset, uint256 amount);
   event HookReceived(bytes32 indexed messageId, uint256 indexed loanId, ActionType actionType, bool success);
   event TSAUpdated(address indexed tsa);
@@ -181,20 +168,7 @@ contract CollarTSAHook is HookBase {
     }
 
     CollarAction memory action = _decodeAction(params.postHookData);
-    Receipt memory receipt = Receipt({
-      actionType: action.actionType,
-      loanId: action.loanId,
-      asset: action.asset,
-      amount: action.amount,
-      recipient: action.recipient,
-      messageId: params.messageId,
-      timestamp: uint64(block.timestamp),
-      success: false
-    });
-
     bool success = _handleInbound(action, params.messageId, params.transferInfo.amount);
-    receipt.success = success;
-    receipts[params.messageId] = receipt;
 
     if (success) {
       _setStatus(action.loanId, action.actionType, Status.Received);

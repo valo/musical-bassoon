@@ -22,3 +22,6 @@
 [submodule "lib/v2-aa"]
 	path = lib/v2-aa
 	url = https://github.com/derivexyz/v2-aa
+[submodule "lib/lz-address-book"]
+	path = lib/lz-address-book
+	url = https://github.com/LayerZero-Labs/lz-address-book
