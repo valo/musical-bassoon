@@ -79,6 +79,7 @@ Derive uses smart-contract wallets to control subaccounts. The L2 TSA contract (
 
 - Requires one action with `WithdrawalData` (asset and amount). The subaccount ID must be non-zero.
 - Checks the nonce and calls `IERC20BasedAsset.withdraw` to withdraw the specified amount from the subaccount to the owner.
+- The TSA only allows withdrawals of the wrapped collateral asset and the cash asset (USDC). Cash withdrawals are limited to the available positive cash balance (no additional borrowing via withdrawal).
 
 ### 4.4 Trade Module
 
@@ -110,9 +111,9 @@ Derive provides various strategy contracts (e.g., CCTSA for covered calls, PPTSA
 
 No partial fills are allowed; the orders must be fully matched. The trade must conform to risk limits (e.g., delta within bounds) enforced by the strategy contract. Derive matches the order against market makers and settles the trade, crediting or debiting the subaccount accordingly.
 
-After the RFQ taker action is executed, the L2 receiver verifies `RfqModule.usedNonces[vaultTSA][takerNonce] == true` and sends a `TradeConfirmed` LayerZero message back to L1. The taker nonce is set to the quote nonce so each RFQ attempt has a unique confirmation.
+After the RFQ taker action is executed, the L2 receiver verifies `RfqModule.usedNonces[vaultTSA][takerNonce] == true` and sends a `TradeConfirmed` LayerZero message back to L1. The taker nonce is set to the quote nonce so each RFQ attempt has a unique confirmation. The `TradeConfirmed` message includes the USDC fee amount bridged to L1 and the Socket `messageId` for that fee withdrawal.
 
-**Loan disbursement**: On L1, `createLoan` consumes the `DepositConfirmed` LayerZero message for the matching `loanId` (recipient must be the vault, asset/amount must match) and a `TradeConfirmed` LayerZero message that includes the `quoteHash` and `takerNonce` (must match the quote nonce). After the Derive trade is confirmed, the vault contract withdraws USDC from the liquidity vault (Euler pool) equal to `D` and transfers it to the borrower. It records loan state `ACTIVE_ZERO_COST`, storing a global sequential `loanId`, `Q`, `K_p`, `K_c`, `t`, principal `D` and subaccount ID. Origination fees are annualized (e.g., 0.5% APR) and funded from option premium/settlement proceeds (collection timing TBD).
+**Loan disbursement**: On L1, `createLoan` consumes the `DepositConfirmed` LayerZero message for the matching `loanId` (recipient must be the vault, asset/amount must match) and a `TradeConfirmed` LayerZero message that includes the `quoteHash`, `takerNonce` (must match the quote nonce), USDC fee amount, and the Socket `messageId` for the fee withdrawal. The vault computes the expected origination fee from `originationFeeApr` and loan duration and requires it to match the bridged amount. The fee is split between the liquidity vault and treasury using `treasuryBps` and paid at loan creation. After fee distribution, the vault contract withdraws USDC from the liquidity vault (Euler pool) equal to `D` and transfers it to the borrower. It records loan state `ACTIVE_ZERO_COST`, storing a global sequential `loanId`, `Q`, `K_p`, `K_c`, `t`, principal `D` and subaccount ID.
 
 **Cancellation before trade**: If the RFQ is rejected or expires before the collar is opened, the borrower calls `requestCancelDeposit(loanId)` on L1. The vault sends a `CancelRequest` LayerZero message to L2, and the receiver signs a Withdrawal Module action. After the collateral is bridged back to L1, the L2 receiver sends a `CollateralReturned` message; an L1 transaction consumes it, clears the pending deposit, and transfers the collateral back to the borrower. No variable loan is opened for cancelled deposits, and subsequent loan creation with that pending deposit is prevented.
 
@@ -238,6 +239,7 @@ Monitors for situations such as the bridge being down or fast withdrawal limits 
 - Withdrawal race conditions: Because bridging is asynchronous, ensure that bridging calls are idempotent and that funds are not double-counted.
 - Oracle reliability: Use multiple price feeds or Derive's TWAP to determine settlement prices. Validate oracle data in the off-chain executor.
 - Derive cash balance risk: Call ITM settlement may result in a negative USDC balance on Derive; ensure the collateral sale fully nets the negative balance before bridging, and account for potential L1 backstop usage if net proceeds are below principal.
+- Socket message ID trust: `TradeConfirmed` includes a Socket `messageId` provided by the L2 executor; the system trusts the executor to supply the correct bridge message ID and amount for the origination fee withdrawal.
 - Role-based parameter changes: Strike bounds, slippage tolerances, market allowlists and other risk parameters are adjustable by a role controlled by a multisig; governance modules may replace this role later.
 - Emergency controls: The protocol supports emergency controls to pause new loans and settlement.
 
@@ -258,9 +260,10 @@ The following items are not yet specified and require clarification before imple
 
 - Trade verification: implemented via `TradeConfirmed` LZ message after `RfqModule.usedNonces` is set for the taker nonce (quote nonce).
 - In-flight accounting: how `inFlight` balances affect liquidity vault share price and withdrawal limits.
+- Shared subaccount accounting: per-loan balance checks are not possible with current Derive action formats. Review whether aggregated withdrawals introduce an attack vector (e.g., withdrawing collateral tied to other active loans) and whether a protocol-level withdrawal pause or stricter withdrawal gating is required.
 - On-chain bounds: whether any on-chain strike/maturity bounds or whitelists should be enforced, or if these are executor-only checks.
 - Maturity enforcement: whether Derive-defined maturities are enforced on-chain or only by the executor.
-- Origination fee timing: fee is annualized and funded from option premium/settlement proceeds, but the exact timing of collection (at origination vs at settlement) is TBD.
+- Origination fee timing: fee is annualized, funded from net option premium, and paid at loan creation after the fee withdrawal is bridged to L1.
 
 ## 10. Conclusion
 

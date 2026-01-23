@@ -485,7 +485,6 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
       shortfall = loan.principal - settlementAmount;
     }
 
-    // TODO: Clarify origination fee collection timing and deduct accordingly.
     uint256 repayAmount = settlementAmount > loan.principal ? loan.principal : settlementAmount;
     if (repayAmount > 0) {
       usdc.safeIncreaseAllowance(address(liquidityVault), repayAmount);
@@ -815,6 +814,18 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     }
   }
 
+  function _quoteOriginationFee(Quote calldata quote) internal view returns (uint256) {
+    if (originationFeeApr == 0) {
+      return 0;
+    }
+    if (quote.maturity <= block.timestamp) {
+      return 0;
+    }
+    uint256 duration = quote.maturity - block.timestamp;
+    uint256 annualFee = Math.mulDiv(quote.borrowAmount, originationFeeApr, 1e18);
+    return Math.mulDiv(annualFee, duration, YEAR);
+  }
+
   function _confirmLoanCreation(Quote calldata quote, bytes32 depositGuid, bytes32 tradeGuid)
     internal
     returns (uint256 loanId, bytes32 quoteHash)
@@ -827,6 +838,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     CollarLZMessages.Message memory tradeMessage = _loadLZMessage(tradeGuid);
     loanId = _validateDepositConfirmed(depositMessage, quote);
     _validateTradeConfirmed(tradeMessage, loanId, quoteHash, quote.nonce);
+    _validateOriginationFee(tradeMessage, quote);
 
     lzMessageConsumed[depositGuid] = true;
     lzMessageConsumed[tradeGuid] = true;
@@ -849,6 +861,18 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
       variableDebt: 0
     });
     usedQuotes[quoteHash] = true;
+
+    uint256 feeAmount = _quoteOriginationFee(quote);
+    if (feeAmount > 0) {
+      uint256 treasuryCut = Math.mulDiv(feeAmount, treasuryBps, MAX_BPS);
+      uint256 vaultCut = feeAmount - treasuryCut;
+      if (treasuryCut > 0) {
+        usdc.safeTransfer(treasury, treasuryCut);
+      }
+      if (vaultCut > 0) {
+        usdc.safeTransfer(address(liquidityVault), vaultCut);
+      }
+    }
 
     liquidityVault.borrow(quote.borrowAmount);
     usdc.safeTransfer(msg.sender, quote.borrowAmount);
@@ -993,6 +1017,25 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
       revert CV_LZMessageMismatch();
     }
     if (lzMessage.quoteHash != quoteHash || lzMessage.takerNonce != takerNonce) {
+      revert CV_LZMessageMismatch();
+    }
+  }
+
+  function _validateOriginationFee(CollarLZMessages.Message memory lzMessage, Quote calldata quote) internal view {
+    uint256 feeAmount = _quoteOriginationFee(quote);
+    if (feeAmount == 0) {
+      if (lzMessage.amount != 0) {
+        revert CV_LZMessageMismatch();
+      }
+      return;
+    }
+    if (lzMessage.asset != address(usdc)) {
+      revert CV_LZMessageMismatch();
+    }
+    if (lzMessage.amount != feeAmount) {
+      revert CV_LZMessageMismatch();
+    }
+    if (lzMessage.socketMessageId == bytes32(0)) {
       revert CV_LZMessageMismatch();
     }
   }

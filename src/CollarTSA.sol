@@ -202,19 +202,31 @@ contract CollarTSA is CollateralManagementTSA {
   function _verifyWithdrawAction(IMatching.Action memory action, BaseTSAAddresses memory tsaAddresses) internal view {
     IWithdrawalModule.WithdrawalData memory withdrawalData = abi.decode(action.data, (IWithdrawalModule.WithdrawalData));
 
-    if (withdrawalData.asset != address(tsaAddresses.wrappedDepositAsset)) {
+    bool isCollateral = withdrawalData.asset == address(tsaAddresses.wrappedDepositAsset);
+    bool isCash = withdrawalData.asset == address(tsaAddresses.cash);
+    if (!isCollateral && !isCash) {
       revert CTSA_InvalidAsset();
     }
 
     (uint shortCalls, uint baseBalance, int cashBalance,,) = _getSubAccountStats();
 
-    uint amount18 = ConvertDecimals.to18Decimals(withdrawalData.assetAmount, tsaAddresses.depositAsset.decimals());
+    if (isCollateral) {
+      uint amount18 = ConvertDecimals.to18Decimals(withdrawalData.assetAmount, tsaAddresses.depositAsset.decimals());
 
-    if (baseBalance < amount18 + shortCalls) {
-      revert CTSA_WithdrawingUtilisedCollateral();
+      if (baseBalance < amount18 + shortCalls) {
+        revert CTSA_WithdrawingUtilisedCollateral();
+      }
+
+      if (cashBalance < _getCollarTSAStorage().params.maxNegCash) {
+        revert CTSA_WithdrawalNegativeCash();
+      }
+      return;
     }
 
-    if (cashBalance < _getCollarTSAStorage().params.maxNegCash) {
+    uint cashAmount18 =
+      ConvertDecimals.to18Decimals(withdrawalData.assetAmount, tsaAddresses.cash.wrappedAsset().decimals());
+    int remainingCash = cashBalance - cashAmount18.toInt256();
+    if (remainingCash < 0) {
       revert CTSA_WithdrawalNegativeCash();
     }
   }

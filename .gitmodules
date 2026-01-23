@@ -25,3 +25,6 @@
 [submodule "lib/lz-address-book"]
 	path = lib/lz-address-book
 	url = https://github.com/LayerZero-Labs/lz-address-book
+[submodule "lib/v2-core"]
+	path = lib/v2-core
+	url = https://github.com/derivexyz/v2-core

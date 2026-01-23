@@ -77,7 +77,7 @@ contract CollarVaultTest is Test {
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
     bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
-    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
+    bytes32 tradeGuid = _tradeConfirm(loanId, quote, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
     uint256 createdLoanId = vault.createLoan(quote, sig, depositGuid, tradeGuid);
@@ -119,7 +119,7 @@ contract CollarVaultTest is Test {
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
     bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
-    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
+    bytes32 tradeGuid = _tradeConfirm(loanId, quote, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
     vault.createLoan(quote, sig, depositGuid, tradeGuid);
@@ -213,7 +213,7 @@ contract CollarVaultTest is Test {
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
     bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
-    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
+    bytes32 tradeGuid = _tradeConfirm(loanId, quote, vault.hashQuote(quote), quote.nonce);
 
     vm.prank(borrower);
     vault.requestCancelDeposit(loanId);
@@ -482,7 +482,7 @@ contract CollarVaultTest is Test {
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
     bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
-    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
+    bytes32 tradeGuid = _tradeConfirm(loanId, quote, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
     vault.createLoan(quote, sig, depositGuid, tradeGuid);
@@ -503,7 +503,7 @@ contract CollarVaultTest is Test {
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
     bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
-    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
+    bytes32 tradeGuid = _tradeConfirm(loanId, quote, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
     uint256 createdLoanId = vault.createLoan(quote, sig, depositGuid, tradeGuid);
@@ -521,7 +521,7 @@ contract CollarVaultTest is Test {
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
     bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
-    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
+    bytes32 tradeGuid = _tradeConfirm(loanId, quote, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
     vm.expectRevert(CollarLiquidityVault.LV_InvalidAmount.selector);
@@ -543,7 +543,7 @@ contract CollarVaultTest is Test {
     bytes memory sig = _signQuote(quote);
     uint256 loanId = _requestDeposit(quote);
     bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
-    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
+    bytes32 tradeGuid = _tradeConfirm(loanId, quote, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
     uint256 createdLoanId = vault.createLoan(quote, sig, depositGuid, tradeGuid);
@@ -558,7 +558,7 @@ contract CollarVaultTest is Test {
     bytes memory sig = _signQuote(quote);
     loanId = _requestDeposit(quote);
     bytes32 depositGuid = _depositConfirm(loanId, quote.collateralAsset, quote.collateralAmount);
-    bytes32 tradeGuid = _tradeConfirm(loanId, vault.hashQuote(quote), quote.nonce);
+    bytes32 tradeGuid = _tradeConfirm(loanId, quote, vault.hashQuote(quote), quote.nonce);
 
     vm.startPrank(borrower);
     uint256 createdLoanId = vault.createLoan(quote, sig, depositGuid, tradeGuid);
@@ -616,21 +616,41 @@ contract CollarVaultTest is Test {
     );
   }
 
-  function _tradeConfirm(uint256 loanId, bytes32 quoteHash, uint256 takerNonce) internal returns (bytes32 guid) {
+  function _tradeConfirm(
+    uint256 loanId,
+    CollarVault.Quote memory quote,
+    bytes32 quoteHash,
+    uint256 takerNonce
+  ) internal returns (bytes32 guid) {
+    uint256 feeAmount = _expectedOriginationFee(quote);
+    bytes32 socketMessageId = feeAmount == 0 ? bytes32(0) : bytes32(uint256(1));
+    if (feeAmount > 0) {
+      usdc.mint(address(vault), feeAmount);
+    }
     guid = _recordLZMessage(
       CollarLZMessages.Message({
         action: CollarLZMessages.Action.TradeConfirmed,
         loanId: loanId,
-        asset: address(0),
-        amount: 0,
+        asset: address(usdc),
+        amount: feeAmount,
         recipient: address(vault),
         subaccountId: vault.deriveSubaccountId(),
-        socketMessageId: bytes32(0),
+        socketMessageId: socketMessageId,
         secondaryAmount: 0,
         quoteHash: quoteHash,
         takerNonce: takerNonce
       })
     );
+  }
+
+  function _expectedOriginationFee(CollarVault.Quote memory quote) internal view returns (uint256) {
+    uint256 feeApr = vault.originationFeeApr();
+    if (feeApr == 0 || quote.maturity <= block.timestamp) {
+      return 0;
+    }
+    uint256 duration = quote.maturity - block.timestamp;
+    uint256 annualFee = (quote.borrowAmount * feeApr) / 1e18;
+    return (annualFee * duration) / 365 days;
   }
 
   function _requestDeposit(CollarVault.Quote memory quote) internal returns (uint256 loanId) {

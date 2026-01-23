@@ -55,6 +55,47 @@ contract CollarTSA_ValidationTests is CollarTSATestUtils {
     collarTsa.signActionData(action, "");
   }
 
+  function testAllowsCashWithdrawal() public {
+    uint usdcAmount = 1_000e6;
+    usdc.mint(address(this), usdcAmount);
+    usdc.approve(address(cash), usdcAmount);
+    cash.deposit(tsaSubacc, usdcAmount);
+
+    IActionVerifier.Action memory action = IActionVerifier.Action({
+      subaccountId: tsaSubacc,
+      nonce: ++tsaNonce,
+      module: withdrawalModule,
+      data: _encodeWithdrawData(500e6, address(cash)),
+      expiry: block.timestamp + 8 minutes,
+      owner: address(tsa),
+      signer: address(tsa)
+    });
+
+    vm.prank(signer);
+    collarTsa.signActionData(action, "");
+  }
+
+  function testRejectsCashWithdrawalWhenInsufficient() public {
+    uint usdcAmount = 100e6;
+    usdc.mint(address(this), usdcAmount);
+    usdc.approve(address(cash), usdcAmount);
+    cash.deposit(tsaSubacc, usdcAmount);
+
+    IActionVerifier.Action memory action = IActionVerifier.Action({
+      subaccountId: tsaSubacc,
+      nonce: ++tsaNonce,
+      module: withdrawalModule,
+      data: _encodeWithdrawData(200e6, address(cash)),
+      expiry: block.timestamp + 8 minutes,
+      owner: address(tsa),
+      signer: address(tsa)
+    });
+
+    vm.prank(signer);
+    vm.expectRevert(CollarTSA.CTSA_WithdrawalNegativeCash.selector);
+    collarTsa.signActionData(action, "");
+  }
+
   function testRejectsLongCall() public {
     _depositToTSA(1e18);
     _executeDeposit(1e18);

@@ -252,24 +252,31 @@ contract LZMessagingTest is Test {
   function testSendTradeConfirmedRequiresUsedNonce() public {
     bytes32 quoteHash = keccak256("quote");
     uint256 takerNonce = 42;
+    bytes32 socketMessageId = bytes32(uint256(555));
 
     vm.expectRevert(CollarTSAReceiver.CTR_RfqTradeNotConfirmed.selector);
-    receiver.sendTradeConfirmed{value: 1}(1, quoteHash, takerNonce);
+    receiver.sendTradeConfirmed{value: 1}(1, address(token), 1e18, socketMessageId, quoteHash, takerNonce);
   }
 
   function testSendTradeConfirmedStoresOnL1() public {
     bytes32 quoteHash = keccak256("quote");
     uint256 takerNonce = 42;
+    bytes32 socketMessageId = bytes32(uint256(556));
+    uint256 amount = 1e18;
 
     rfqModule.setUsedNonce(address(tsa), takerNonce, true);
+    socket.setExecuted(socketMessageId, true);
 
-    receiver.sendTradeConfirmed{value: 1}(1, quoteHash, takerNonce);
+    receiver.sendTradeConfirmed{value: 1}(1, address(token), amount, socketMessageId, quoteHash, takerNonce);
 
     CollarLZMessages.Message memory tradeMessage =
       abi.decode(endpointL2.lastMessage(), (CollarLZMessages.Message));
     assertEq(uint8(tradeMessage.action), uint8(CollarLZMessages.Action.TradeConfirmed));
     assertEq(tradeMessage.loanId, 1);
     assertEq(tradeMessage.recipient, vaultRecipient);
+    assertEq(tradeMessage.asset, address(token));
+    assertEq(tradeMessage.amount, amount);
+    assertEq(tradeMessage.socketMessageId, socketMessageId);
     assertEq(tradeMessage.quoteHash, quoteHash);
     assertEq(tradeMessage.takerNonce, takerNonce);
 

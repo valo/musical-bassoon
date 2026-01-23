@@ -194,7 +194,14 @@ contract CollarTSAReceiver is AccessControl, OApp {
     return _send(message, defaultOptions);
   }
 
-  function sendTradeConfirmed(uint256 loanId, bytes32 quoteHash, uint256 takerNonce)
+  function sendTradeConfirmed(
+    uint256 loanId,
+    address asset,
+    uint256 amount,
+    bytes32 socketMessageId,
+    bytes32 quoteHash,
+    uint256 takerNonce
+  )
     external
     payable
     onlyRole(KEEPER_ROLE)
@@ -210,15 +217,23 @@ contract CollarTSAReceiver is AccessControl, OApp {
     if (!IRfqNonceTracker(rfqModule).usedNonces(address(tsa), takerNonce)) {
       revert CTR_RfqTradeNotConfirmed();
     }
+    if (amount > 0) {
+      if (socketMessageId == bytes32(0)) {
+        revert CTR_SocketNotFinalized();
+      }
+      if (address(socket) != address(0) && !socket.messageExecuted(socketMessageId)) {
+        revert CTR_SocketNotFinalized();
+      }
+    }
 
     CollarLZMessages.Message memory message = CollarLZMessages.Message({
       action: CollarLZMessages.Action.TradeConfirmed,
       loanId: loanId,
-      asset: address(0),
-      amount: 0,
+      asset: asset,
+      amount: amount,
       recipient: vaultRecipient,
       subaccountId: tsa.subAccount(),
-      socketMessageId: bytes32(0),
+      socketMessageId: socketMessageId,
       secondaryAmount: 0,
       quoteHash: quoteHash,
       takerNonce: takerNonce
