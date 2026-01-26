@@ -57,7 +57,6 @@ contract CollarTSAHook is HookBase {
 
   enum ActionType {
     DepositCollateral,
-    RollCollateral,
     ReturnCollateral,
     CancelCollateral,
     SettleUSDC
@@ -218,7 +217,7 @@ contract CollarTSAHook is HookBase {
       return false;
     }
 
-    if (action.actionType == ActionType.DepositCollateral || action.actionType == ActionType.RollCollateral) {
+    if (action.actionType == ActionType.DepositCollateral) {
       return _handleDeposit(action, messageId);
     }
 

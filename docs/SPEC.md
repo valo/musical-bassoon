@@ -18,7 +18,7 @@ This specification documents the smart contracts, off-chain components and flows
 
 | Entity/Component | Description |
 | --- | --- |
-| Borrower | Permissionless user who provides crypto collateral; receives a zero-cost loan; may roll into a variable-rate loan or refinance into a new collar. |
+| Borrower | Permissionless user who provides crypto collateral; receives a zero-cost loan; may convert into a variable-rate loan after neutral expiry. |
 | Lender | Deposits USDC into an ERC-4626 vault on L1; earns Euler yield and premiums from collars. |
 | Vault Contract (L1) | Smart contract controlling collateral, loans and settlement on L1. It does not sign Derive actions. |
 | TSA Contract (L2) | `CollarTSA` on Derive L2; inherits `BaseOnChainSigningTSA`, owns the Derive subaccount, and signs actions via ERC-1271. |
@@ -47,7 +47,7 @@ If the RFQ is unfavorable or the borrower cancels before options are opened, the
 
 ### 3.2 Collateral withdrawal (L2 -> L1)
 
-Upon loan maturity or refinance, the vault executor uses the Withdrawal Module to withdraw collateral or USDC from the subaccount. The fast bridge is used to send funds back to the vault on L1. The vault contract waits for the bridged funds before updating liquidity balances.
+Upon loan maturity or variable-rate conversion, the vault executor uses the Withdrawal Module to withdraw collateral or USDC from the subaccount. The fast bridge is used to send funds back to the vault on L1. The vault contract waits for the bridged funds before updating liquidity balances.
 
 LayerZero messages are used to relay withdrawal requests and settlement reports (including the Socket `messageId`) between L1 and L2. For withdrawals, L2 sends a `CollateralReturned` message once the L2->L1 Socket bridge is initiated so L1 can finalize state based on bridge confirmation instead of off-chain attestations. L1 finalization consumes these LayerZero messages and is executed via an L1 transaction (borrower or keeper pays gas).
 
@@ -156,11 +156,7 @@ Since the fast bridge is available for all fund movement, the protocol can remov
 
 ### 5.4 Rolling a variable loan into a new collar
 
-Borrowers may roll an active variable-rate loan into a new zero-cost loan:
-
-1. Repay variable debt: The protocol uses new loan proceeds to repay the borrower's outstanding variable debt in Euler. This action releases the collateral.
-2. Bridge collateral to L2: The released collateral is fast-bridged to Derive and deposited into the vault's subaccount.
-3. Open new collar: The executor runs another RFQ, opens a new collar with chosen strikes and maturity, and records a new `loanId`. The difference between the new principal and the repaid variable debt is paid to the borrower. The previous loan entry is closed.
+Rolling is not supported. If a borrower wants a new collar after converting to a variable loan, they must repay the variable loan, withdraw the collateral from Euler, and initiate a new collar loan via the standard origination flow.
 
 ## 6. Smart Contracts and Interactions
 
@@ -180,9 +176,8 @@ Provides functions:
 - `finalizeDepositReturn(loanId, lzGuid)` - permissionless; consumes the L2 `CollateralReturned` message for a pending deposit and transfers collateral back to the borrower.
 - `settleLoan(loanId)` - restricted to keeper/executor roles; closes positions and initiates bridging of proceeds.
 - `convertToVariable(loanId)` - restricted to keeper/executor roles; bridges collateral back and interacts with Euler.
-- `rollLoanToNew(loanId, newKp, newMaturity)` - restricted to keeper/executor roles; repays variable debt and opens a new collar.
 
-Exposes events for state changes (`LoanCreated`, `LoanSettled`, `LoanRolled`, etc.).
+Exposes events for state changes (`LoanCreated`, `LoanSettled`, etc.).
 
 ### 6.2 Off-chain executor
 
@@ -238,6 +233,7 @@ Monitors for situations such as the bridge being down or fast withdrawal limits 
 - Liquidation risk: Variable-rate loans on Euler are subject to liquidation. The protocol relies on Euler's liquidation mechanisms rather than triggering forced sales.
 - Withdrawal race conditions: Because bridging is asynchronous, ensure that bridging calls are idempotent and that funds are not double-counted.
 - Oracle reliability: Use multiple price feeds or Derive's TWAP to determine settlement prices. Validate oracle data in the off-chain executor.
+- Settlement amount trust: The executor is trusted to compute and report the final settlement amount (including collateral sale proceeds) in `SettlementReport`.
 - Derive cash balance risk: Call ITM settlement may result in a negative USDC balance on Derive; ensure the collateral sale fully nets the negative balance before bridging, and account for potential L1 backstop usage if net proceeds are below principal.
 - Socket message ID trust: `TradeConfirmed` includes a Socket `messageId` provided by the L2 executor; the system trusts the executor to supply the correct bridge message ID and amount for the origination fee withdrawal.
 - Role-based parameter changes: Strike bounds, slippage tolerances, market allowlists and other risk parameters are adjustable by a role controlled by a multisig; governance modules may replace this role later.
@@ -267,4 +263,4 @@ The following items are not yet specified and require clarification before imple
 
 ## 10. Conclusion
 
-By leveraging Derive's vault architecture and fast bridge, CollarFi can implement a non-custodial lending protocol that hedges collateralized loans with zero-cost collars. An L2 TSA contract owns the Derive subaccount, and the L1 vault coordinates collateral and settlement via rapid bridging. When options expire neutrally, the collateral is bridged back and deposited into Euler V2 to continue earning yield via a variable-rate loan. Rolling to new collars or converting between loan types is straightforward and transparent. Careful configuration of signers, nonces, bridge limits and risk parameters ensures solvency and security for lenders and borrowers alike.
+By leveraging Derive's vault architecture and fast bridge, CollarFi can implement a non-custodial lending protocol that hedges collateralized loans with zero-cost collars. An L2 TSA contract owns the Derive subaccount, and the L1 vault coordinates collateral and settlement via rapid bridging. When options expire neutrally, the collateral is bridged back and deposited into Euler V2 to continue earning yield via a variable-rate loan. Careful configuration of signers, nonces, bridge limits and risk parameters ensures solvency and security for lenders and borrowers alike.

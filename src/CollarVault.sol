@@ -158,7 +158,6 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
   event LoanSettled(uint256 indexed loanId, SettlementOutcome outcome, uint256 settlementAmount);
   event SettlementShortfall(uint256 indexed loanId, uint256 shortfall);
   event LoanConverted(uint256 indexed loanId, uint256 variableDebt);
-  event LoanRolled(uint256 indexed oldLoanId, uint256 indexed newLoanId, uint256 newPrincipal);
   event LoanClosed(uint256 indexed loanId);
   event TreasuryUpdated(address indexed treasury, uint256 bps);
   event OriginationFeeAprUpdated(uint256 feeApr);
@@ -567,64 +566,6 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
 
     loan.state = LoanState.CLOSED;
     emit LoanClosed(loanId);
-  }
-
-  /// @notice Roll an active variable loan into a new zero-cost loan.
-  function rollLoanToNew(uint256 loanId, Quote calldata quote, bytes calldata quoteSig)
-    external
-    nonReentrant
-    whenNotPaused
-    onlyKeeperOrExecutor
-    returns (uint256 newLoanId)
-  {
-    Loan storage loan = loans[loanId];
-    if (loan.state != LoanState.ACTIVE_VARIABLE) {
-      revert CV_InvalidLoanState();
-    }
-
-    _validateQuote(quote, quoteSig, loan.borrower);
-    if (quote.collateralAsset != loan.collateralAsset || quote.collateralAmount != loan.collateralAmount) {
-      revert CV_InvalidAmount();
-    }
-    _validateBorrowAmount(quote);
-
-    if (quote.borrowAmount < loan.variableDebt) {
-      revert CV_InvalidAmount();
-    }
-
-    liquidityVault.borrow(quote.borrowAmount);
-    usdc.safeIncreaseAllowance(address(eulerAdapter), loan.variableDebt);
-    eulerAdapter.repay(address(usdc), loan.variableDebt, loan.borrower);
-    eulerAdapter.withdrawCollateral(loan.collateralAsset, loan.collateralAmount, loan.borrower, address(this));
-
-    _bridgeToL2(loan.collateralAsset, loan.collateralAmount, l2Recipient);
-
-    loan.state = LoanState.CLOSED;
-    emit LoanClosed(loanId);
-
-    newLoanId = nextLoanId++;
-    loans[newLoanId] = Loan({
-      borrower: loan.borrower,
-      collateralAsset: quote.collateralAsset,
-      collateralAmount: quote.collateralAmount,
-      maturity: quote.maturity,
-      putStrike: quote.putStrike,
-      callStrike: quote.callStrike,
-      principal: quote.borrowAmount,
-      subaccountId: deriveSubaccountId,
-      state: LoanState.ACTIVE_ZERO_COST,
-      startTime: block.timestamp,
-      originationFeeApr: originationFeeApr,
-      variableDebt: 0
-    });
-    usedQuotes[hashQuote(quote)] = true;
-
-    uint256 payout = quote.borrowAmount - loan.variableDebt;
-    if (payout > 0) {
-      usdc.safeTransfer(loan.borrower, payout);
-    }
-
-    emit LoanRolled(loanId, newLoanId, quote.borrowAmount);
   }
 
   /// @notice Returns the EIP-712 hash for a quote.

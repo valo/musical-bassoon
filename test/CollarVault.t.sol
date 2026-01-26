@@ -405,46 +405,6 @@ contract CollarVaultTest is Test {
     assertEq(wbtc.balanceOf(borrower), loan.collateralAmount);
   }
 
-  function testRollLoanToNew() public {
-    uint256 loanId = _createLoan();
-    CollarVault.Loan memory loan = vault.getLoan(loanId);
-
-    wbtc.mint(address(vault), loan.collateralAmount);
-    usdc.mint(address(eulerAdapter), loan.principal);
-
-    bytes32 guid = _recordLZMessage(
-      CollarLZMessages.Message({
-        action: CollarLZMessages.Action.CollateralReturned,
-        loanId: loanId,
-        asset: address(wbtc),
-        amount: loan.collateralAmount,
-        recipient: address(vault),
-        subaccountId: loan.subaccountId,
-        socketMessageId: bytes32(0),
-        secondaryAmount: 0,
-        quoteHash: bytes32(0),
-        takerNonce: 0
-      })
-    );
-
-    vm.warp(loan.maturity + 1);
-    vm.prank(keeper);
-    vault.settleLoan(loanId, CollarVault.SettlementOutcome.Neutral, guid);
-
-    CollarVault.Quote memory quote = _quote(2, borrower);
-    quote.borrowAmount = loan.principal + 3e6;
-    quote.putStrike = 20003e6;
-    bytes memory sig = _signQuote(quote);
-
-    vm.prank(executor);
-    uint256 newLoanId = vault.rollLoanToNew(loanId, quote, sig);
-
-    assertEq(uint256(vault.getLoan(loanId).state), uint256(CollarVault.LoanState.CLOSED));
-    assertEq(uint256(vault.getLoan(newLoanId).state), uint256(CollarVault.LoanState.ACTIVE_ZERO_COST));
-    assertEq(usdc.balanceOf(borrower), quote.borrowAmount);
-    assertEq(wbtc.balanceOf(address(bridge)), loan.collateralAmount * 2);
-  }
-
   function testFuzzSettlementAmount(uint256 excess) public {
     uint256 loanId = _createLoan();
     CollarVault.Loan memory loan = vault.getLoan(loanId);
