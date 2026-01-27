@@ -447,9 +447,6 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
 
     uint256 shortfall = 0;
     if (settlementAmount < loan.principal) {
-      if (outcome != SettlementOutcome.CallITM) {
-        revert CV_InsufficientSettlement();
-      }
       shortfall = loan.principal - settlementAmount;
     }
 

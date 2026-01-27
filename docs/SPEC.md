@@ -204,7 +204,7 @@ At maturity `t`, the executor (or a keeper) settles the collar position on Deriv
 - Spot collateral sales are executed via the RFQ module only; order-book spot trades are not used.
 - The RFQ is executed on Derive; collateral is sold to USDC before any bridging.
 - All USDC proceeds (including the put payoff) are withdrawn via the Withdrawal Module. The fast bridge is used to send funds back to L1.
-- On L1, the vault contract repays the principal `D` to the lending pool. If proceeds exceed `D`, the excess is distributed between the liquidity vault and protocol treasury according to a governance-configurable split. The loan state becomes `CLOSED` after bridged funds arrive.
+- On L1, the vault contract repays the principal `D` to the lending pool. If proceeds are below `D`, the shortfall is written off against the liquidity vault. If proceeds exceed `D`, the excess is distributed between the liquidity vault and protocol treasury according to a governance-configurable split. The loan state becomes `CLOSED` after bridged funds arrive.
 
 ```mermaid
 sequenceDiagram
@@ -227,9 +227,13 @@ sequenceDiagram
   Keeper->>L2Recv: sendSettlementReport(loanId, usdcAmount, socketMessageId)
   L2Recv-->>LZ: send SettlementReport
   Keeper->>Vault: settleLoan(loanId, PutITM, lzGuid)
-  Vault->>Liquidity: repay(principal)
-  Vault->>Treasury: transfer surplus cut
-  Vault->>Liquidity: transfer surplus cut
+  Vault->>Liquidity: repay(min(settlement, principal))
+  alt settlement < principal
+    Vault->>Liquidity: writeOff(shortfall)
+  else settlement > principal
+    Vault->>Treasury: transfer surplus cut
+    Vault->>Liquidity: transfer surplus cut
+  end
 ```
 
 #### Outcome 2: Neutral corridor (`K_p <= S_t <= K_c`)
@@ -272,6 +276,7 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
+  actor Borrower
   actor Keeper
   participant TSA as L2 CollarTSA
   participant Match as Derive Matching/RfqModule
@@ -290,9 +295,12 @@ sequenceDiagram
   Keeper->>L2Recv: sendSettlementReport(loanId, usdcAmount, socketMessageId)
   L2Recv-->>LZ: send SettlementReport
   Keeper->>Vault: settleLoan(loanId, CallITM, lzGuid)
-  Vault->>Liquidity: repay(principal or writeOff)
-  Vault->>Liquidity: writeOff(shortfall if any)
-  Vault->>Borrower: transfer excess (if any)
+  Vault->>Liquidity: repay(min(settlement, principal))
+  alt settlement < principal
+    Vault->>Liquidity: writeOff(shortfall)
+  else settlement > principal
+    Vault->>Borrower: transfer excess
+  end
 ```
 
 ### 5.3 Variable-rate conversion (neutral corridor)

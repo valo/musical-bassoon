@@ -339,6 +339,39 @@ contract CollarVaultTest is Test {
     assertEq(uint256(vault.getLoan(loanId).state), uint256(CollarVault.LoanState.CLOSED));
   }
 
+  function testSettleLoanPutItmShortfall() public {
+    uint256 loanId = _createLoan();
+    CollarVault.Loan memory loan = vault.getLoan(loanId);
+    uint256 shortfall = 4e6;
+    uint256 settlementAmount = loan.principal - shortfall;
+
+    usdc.mint(address(vault), settlementAmount);
+
+    bytes32 guid = _recordLZMessage(
+      CollarLZMessages.Message({
+        action: CollarLZMessages.Action.SettlementReport,
+        loanId: loanId,
+        asset: address(usdc),
+        amount: settlementAmount,
+        recipient: address(vault),
+        subaccountId: loan.subaccountId,
+        socketMessageId: bytes32(0),
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
+      })
+    );
+
+    vm.warp(loan.maturity + 1);
+    vm.prank(keeper);
+    vault.settleLoan(loanId, CollarVault.SettlementOutcome.PutITM, guid);
+
+    assertEq(liquidityVault.activeLoans(), 0);
+    assertEq(liquidityVault.totalAssets(), 1_000_000e6 - shortfall);
+    assertEq(usdc.balanceOf(borrower), loan.principal);
+    assertEq(uint256(vault.getLoan(loanId).state), uint256(CollarVault.LoanState.CLOSED));
+  }
+
   function testSettleLoanRequiresLZMessage() public {
     uint256 loanId = _createLoan();
     CollarVault.Loan memory loan = vault.getLoan(loanId);
