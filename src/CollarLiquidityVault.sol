@@ -17,7 +17,6 @@ contract CollarLiquidityVault is ERC4626, AccessControl, ReentrancyGuard {
 
   IERC4626 public eulerVault;
   uint256 public activeLoans;
-  uint256 public inFlight;
 
   error LV_InsufficientLiquidity();
   error LV_InvalidAmount();
@@ -95,19 +94,6 @@ contract CollarLiquidityVault is ERC4626, AccessControl, ReentrancyGuard {
     emit LossRecorded(amount);
   }
 
-  /// @notice Increase the tracked in-flight settlement amount.
-  function increaseInFlight(uint256 amount) external onlyRole(VAULT_ROLE) {
-    inFlight += amount;
-  }
-
-  /// @notice Decrease the tracked in-flight settlement amount.
-  function decreaseInFlight(uint256 amount) external onlyRole(VAULT_ROLE) {
-    if (amount > inFlight) {
-      revert LV_InvalidAmount();
-    }
-    inFlight -= amount;
-  }
-
   /// @notice Return assets immediately available for withdrawal or borrowing.
   function availableLiquidity() public view returns (uint256) {
     return IERC20(asset()).balanceOf(address(this)) + _eulerAssets();
@@ -115,7 +101,7 @@ contract CollarLiquidityVault is ERC4626, AccessControl, ReentrancyGuard {
 
   /// @notice Return total assets including outstanding loans and Euler balance.
   function totalAssets() public view override returns (uint256) {
-    // TODO: Clarify whether in-flight amounts should be included in share pricing.
+    // In-flight amounts are excluded from NAV/share pricing until funds land on L1.
     return IERC20(asset()).balanceOf(address(this)) + _eulerAssets() + activeLoans;
   }
 
