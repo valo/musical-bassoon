@@ -54,6 +54,7 @@ contract CollarTSAReceiver is AccessControl, OApp {
   error CTR_SocketNotFinalized();
   error CTR_RfqModuleNotSet();
   error CTR_RfqTradeNotConfirmed();
+  error CTR_InvalidSubaccount();
 
   constructor(
     address admin,
@@ -178,13 +179,17 @@ contract CollarTSAReceiver is AccessControl, OApp {
     if (vaultRecipient == address(0)) {
       revert CTR_InvalidRecipient();
     }
+    uint256 pendingSubaccountId = tsa.getPendingSubaccountId();
+    if (pendingSubaccountId == 0) {
+      revert CTR_InvalidSubaccount();
+    }
     CollarLZMessages.Message memory message = CollarLZMessages.Message({
       action: CollarLZMessages.Action.CollateralReturned,
       loanId: loanId,
       asset: asset,
       amount: amount,
       recipient: vaultRecipient,
-      subaccountId: tsa.subAccount(),
+      subaccountId: pendingSubaccountId,
       socketMessageId: socketMessageId,
       secondaryAmount: 0,
       quoteHash: bytes32(0),
@@ -314,13 +319,14 @@ contract CollarTSAReceiver is AccessControl, OApp {
   }
 
   function _sendAck(CollarLZMessages.Message memory origin, CollarLZMessages.Action action) internal {
+    uint256 subaccountId = action == CollarLZMessages.Action.DepositConfirmed ? origin.subaccountId : tsa.subAccount();
     CollarLZMessages.Message memory message = CollarLZMessages.Message({
       action: action,
       loanId: origin.loanId,
       asset: origin.asset,
       amount: origin.amount,
       recipient: origin.recipient,
-      subaccountId: tsa.subAccount(),
+      subaccountId: subaccountId,
       socketMessageId: origin.socketMessageId,
       secondaryAmount: 0,
       quoteHash: bytes32(0),

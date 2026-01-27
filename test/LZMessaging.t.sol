@@ -86,6 +86,8 @@ contract MockCollarTSA is ICollarTSA {
   address public rfqModule;
   address public wrappedDepositAsset;
   uint256 public subaccountId;
+  uint256 public pendingSubaccountId;
+  address public transferModule;
   CollarTSAParams private params;
 
   constructor(address wrappedDepositAsset_, address rfqModule_) {
@@ -94,6 +96,8 @@ contract MockCollarTSA is ICollarTSA {
     rfqModule = rfqModule_;
     wrappedDepositAsset = wrappedDepositAsset_;
     subaccountId = 1;
+    pendingSubaccountId = 2;
+    transferModule = address(0x9999);
     params.minSignatureExpiry = 1 minutes;
     params.maxSignatureExpiry = 30 minutes;
   }
@@ -128,6 +132,14 @@ contract MockCollarTSA is ICollarTSA {
 
   function subAccount() external view returns (uint256) {
     return subaccountId;
+  }
+
+  function getTransferModule() external view returns (address) {
+    return transferModule;
+  }
+
+  function getPendingSubaccountId() external view returns (uint256) {
+    return pendingSubaccountId;
   }
 }
 
@@ -235,8 +247,8 @@ contract LZMessagingTest is Test {
     receiver.handleMessage(receipt.guid);
   }
 
-  function testHandleCancelRequestSignsWithdrawalWithGuidNonce() public {
-    CollarLZMessages.Message memory message = _buildMessage(CollarLZMessages.Action.CancelRequest, bytes32(0));
+  function testHandleReturnRequestSignsWithdrawalWithGuidNonce() public {
+    CollarLZMessages.Message memory message = _buildMessage(CollarLZMessages.Action.ReturnRequest, bytes32(0));
 
     MessagingReceipt memory receipt = messenger.sendMessageWithOptions{value: 1}(message, "");
     _deliverToReceiver(receipt.guid, message);
@@ -300,6 +312,7 @@ contract LZMessagingTest is Test {
     assertEq(returnedMessage.loanId, 1);
     assertEq(returnedMessage.asset, address(token));
     assertEq(returnedMessage.amount, 2e18);
+    assertEq(returnedMessage.subaccountId, tsa.getPendingSubaccountId());
     assertEq(returnedMessage.socketMessageId, socketMessageId);
     assertEq(returnedMessage.recipient, vaultRecipient);
 
@@ -317,13 +330,15 @@ contract LZMessagingTest is Test {
     view
     returns (CollarLZMessages.Message memory)
   {
+    uint256 subaccountId = action == CollarLZMessages.Action.DepositIntent
+      || action == CollarLZMessages.Action.ReturnRequest ? tsa.getPendingSubaccountId() : tsa.subAccount();
     return CollarLZMessages.Message({
       action: action,
       loanId: 1,
       asset: address(token),
       amount: 1e18,
       recipient: address(this),
-      subaccountId: tsa.subAccount(),
+      subaccountId: subaccountId,
       socketMessageId: socketMessageId,
       secondaryAmount: 0,
       quoteHash: bytes32(0),

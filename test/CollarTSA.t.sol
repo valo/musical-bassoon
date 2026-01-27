@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {IActionVerifier} from "v2-matching/src/interfaces/IActionVerifier.sol";
 import {IRfqModule} from "v2-matching/src/interfaces/IRfqModule.sol";
+import {ITransferModule} from "v2-matching/src/interfaces/ITransferModule.sol";
 import {OptionEncoding} from "lyra-utils/encoding/OptionEncoding.sol";
 
 import {CollarTSA} from "../src/CollarTSA.sol";
@@ -252,6 +253,136 @@ contract CollarTSA_ValidationTests is CollarTSATestUtils {
     vm.prank(signer);
     vm.expectRevert(CollarTSA.CTSA_TradeDataDoesNotMatchOrderHash.selector);
     collarTsa.signActionData(action, abi.encode(trades));
+  }
+
+  function testAllowsActiveToPendingTransferWithCoverage() public {
+    _depositToTSA(10e18);
+    _executeDeposit(10e18);
+    _openCollarPosition(1e18);
+
+    uint pendingSubacc = subAccounts.createAccount(address(tsa), markets[MARKET].pmrm);
+    collarTsa.setPendingSubaccountId(pendingSubacc);
+
+    ITransferModule.Transfers[] memory transfers = new ITransferModule.Transfers[](1);
+    transfers[0] = ITransferModule.Transfers({
+      asset: address(markets[MARKET].base),
+      subId: 0,
+      amount: int(9e18)
+    });
+    ITransferModule.TransferData memory transferData = ITransferModule.TransferData({
+      toAccountId: pendingSubacc,
+      managerForNewAccount: address(0),
+      transfers: transfers
+    });
+
+    IActionVerifier.Action memory action = IActionVerifier.Action({
+      subaccountId: tsaSubacc,
+      nonce: ++tsaNonce,
+      module: transferModule,
+      data: abi.encode(transferData),
+      expiry: block.timestamp + 8 minutes,
+      owner: address(tsa),
+      signer: address(tsa)
+    });
+
+    vm.prank(signer);
+    collarTsa.signActionData(action, "");
+  }
+
+  function testRejectsActiveToPendingTransferInsufficientCoverage() public {
+    _depositToTSA(10e18);
+    _executeDeposit(10e18);
+    _openCollarPosition(1e18);
+
+    uint pendingSubacc = subAccounts.createAccount(address(tsa), markets[MARKET].pmrm);
+    collarTsa.setPendingSubaccountId(pendingSubacc);
+
+    ITransferModule.Transfers[] memory transfers = new ITransferModule.Transfers[](1);
+    transfers[0] = ITransferModule.Transfers({
+      asset: address(markets[MARKET].base),
+      subId: 0,
+      amount: int(9e18 + 1)
+    });
+    ITransferModule.TransferData memory transferData = ITransferModule.TransferData({
+      toAccountId: pendingSubacc,
+      managerForNewAccount: address(0),
+      transfers: transfers
+    });
+
+    IActionVerifier.Action memory action = IActionVerifier.Action({
+      subaccountId: tsaSubacc,
+      nonce: ++tsaNonce,
+      module: transferModule,
+      data: abi.encode(transferData),
+      expiry: block.timestamp + 8 minutes,
+      owner: address(tsa),
+      signer: address(tsa)
+    });
+
+    vm.prank(signer);
+    vm.expectRevert(CollarTSA.CTSA_TransferInsufficientCollateral.selector);
+    collarTsa.signActionData(action, "");
+  }
+
+  function _openCollarPosition(int amount) internal {
+    uint64 expiry = uint64(block.timestamp + 7 days);
+    _setForwardPrice(MARKET, expiry, 2000e18, 1e18);
+    _setFixedSVIDataForExpiry(MARKET, expiry);
+
+    IRfqModule.TradeData[] memory trades = new IRfqModule.TradeData[](2);
+    trades[0] = IRfqModule.TradeData({
+      asset: address(markets[MARKET].option),
+      subId: OptionEncoding.toSubId(expiry, 2200e18, true),
+      price: 100e18,
+      amount: amount
+    });
+    trades[1] = IRfqModule.TradeData({
+      asset: address(markets[MARKET].option),
+      subId: OptionEncoding.toSubId(expiry, 1800e18, false),
+      price: 1e18,
+      amount: -amount
+    });
+
+    IRfqModule.RfqOrder memory order = IRfqModule.RfqOrder({maxFee: 0, trades: trades});
+    IRfqModule.TakerOrder memory takerOrder =
+      IRfqModule.TakerOrder({orderHash: keccak256(abi.encode(trades)), maxFee: 0});
+
+    IActionVerifier.Action[] memory actions = new IActionVerifier.Action[](2);
+    bytes[] memory signatures = new bytes[](2);
+
+    (actions[0], signatures[0]) = _createActionAndSign(
+      nonVaultSubacc,
+      ++nonVaultNonce,
+      address(rfqModule),
+      abi.encode(order),
+      block.timestamp + 1 days,
+      nonVaultAddr,
+      nonVaultAddr,
+      nonVaultPk
+    );
+
+    actions[1] = IActionVerifier.Action({
+      subaccountId: tsaSubacc,
+      nonce: ++tsaNonce,
+      module: rfqModule,
+      data: abi.encode(takerOrder),
+      expiry: block.timestamp + 8 minutes,
+      owner: address(tsa),
+      signer: address(tsa)
+    });
+
+    vm.prank(signer);
+    tsa.signActionData(actions[1], abi.encode(trades));
+
+    IRfqModule.FillData memory fill = IRfqModule.FillData({
+      makerAccount: nonVaultSubacc,
+      takerAccount: tsaSubacc,
+      makerFee: 0,
+      takerFee: 0,
+      managerData: bytes("")
+    });
+
+    _verifyAndMatch(actions, signatures, abi.encode(fill));
   }
 
   function testAllowsSpotRfqSellAsTaker() public {

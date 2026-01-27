@@ -23,9 +23,9 @@ This specification documents the smart contracts, off-chain components and flows
 | Vault Contract (L1) | Smart contract controlling collateral, loans and settlement on L1. It does not sign Derive actions. |
 | TSA Contract (L2) | `CollarTSA` on Derive L2; inherits `BaseOnChainSigningTSA`, owns the Derive subaccount, and signs actions via ERC-1271. |
 | Vault Executor (off-chain) | Authorized signer that prepares and signs orders off-chain, posts them to Derive's API, monitors options positions and triggers settlement. |
-| Liquidity Vault (USDC Pool) | ERC-4626 vault storing lender USDC. Integrates with Euler V2 for yield. Tracks available liquidity, active loans and in-flight settlement amounts. |
+| Liquidity Vault (USDC Pool) | ERC-4626 vault storing lender USDC. Integrates with Euler V2 for yield. Tracks available liquidity and active loans. |
 | Euler Money Market | Lending market where USDC can be lent and borrowed at variable rates. |
-| Derive Subaccount | Account on Derive L2 that holds collateral and positions. Owned by the L2 TSA contract via ERC-1271. |
+| Derive Subaccounts | Two subaccounts on Derive L2: `pending` holds deposits before a collar is opened; `active` holds collateral backing open collars and settlement flows. Both are owned by the L2 TSA contract via ERC-1271. |
 | Derive Deposit Module | Module that deposits ERC-20 tokens into a subaccount. Called by the executor using the L2 TSA signature via Derive's API. |
 | Derive Withdrawal Module | Module that withdraws ERC-20 tokens from a subaccount back to L1. Called by the executor using the L2 TSA signature via Derive's API. |
 | Derive Trade Module | Module that matches limit orders and executes trades (options purchases and sales). |
@@ -37,13 +37,13 @@ This specification documents the smart contracts, off-chain components and flows
 
 ### 3.1 Collateral deposit (L1 -> L2)
 
-When a borrower requests a new loan, the vault contract receives collateral (standard, non-rebasing ERC-20 only; use wrapped variants such as wstETH) from the borrower on L1. The vault calls the Socket SuperBridge fast bridge to transfer the collateral to L2. Once it arrives, the vault executor uses the Deposit Module to deposit the tokens into its Derive subaccount. The vault contract records the collateral amount, subaccount ID, and a pending-deposit state until L2 confirmation is complete.
+When a borrower accepts a quote, they submit `createLoanWithPermit` on L1 with the EIP-712 quote signature and a Permit2 signature for the collateral. The vault pulls collateral (standard, non-rebasing ERC-20 only; use wrapped variants such as wstETH) via Permit2, sends it over the Socket SuperBridge to L2, and records a pending-deposit state. This is the borrower's only on-chain transaction; the keeper finalizes the loan later after L2 confirmations.
 
-Because RFQ pricing on Derive requires collateral in the subaccount, the loan lifecycle is asynchronous: collateral must be confirmed on L2 before quotes are finalized and the loan is disbursed on L1.
+Because RFQ execution on Derive requires collateral in the subaccount, the loan lifecycle is asynchronous: collateral must be confirmed on L2 before the RFQ trade is executed and the loan is disbursed on L1.
 
-To minimize trust assumptions, the vault sends a LayerZero message alongside the Socket bridge transfer containing the Socket `messageId` and deposit metadata (loanId, asset, amount, subaccountId). A dedicated L2 receiver stores the message and only signs a Deposit Module action once the Socket transfer is confirmed. The L2 receiver then sends a LayerZero `DepositConfirmed` acknowledgment (including the vault recipient, asset and amount) back to L1 so the vault can finalize state without relying on an off-chain relayer.
+To minimize trust assumptions, the vault sends a LayerZero message alongside the Socket bridge transfer containing the Socket `messageId` and deposit metadata (loanId, asset, amount, subaccountId). A dedicated L2 receiver stores the message and only signs a Deposit Module action once the Socket transfer is confirmed. The L2 receiver then sends a LayerZero `DepositConfirmed` acknowledgment (including the vault recipient, asset and amount) back to L1 so the keeper can finalize state without relying on an off-chain relayer.
 
-If the RFQ is unfavorable or the borrower cancels before options are opened, the borrower can request a collateral withdrawal. The L1 vault sends a `CancelRequest` LayerZero message to the L2 receiver, which signs a Withdrawal Module action. The executor submits the withdrawal and bridges the collateral back to L1. The L2 receiver sends a `CollateralReturned` LayerZero message including the Socket `messageId` so L1 can finalize once the bridge completes. Withdrawals are disallowed once options have been opened.
+Borrowers do not cancel deposits directly. If the RFQ cannot be executed after the deposit is bridged (e.g., quote expiry or failure to trade), the executor initiates a return from the `pending` subaccount by sending a `ReturnRequest` LayerZero message. The L2 receiver signs a Withdrawal Module action from `pending`, and the executor bridges the collateral back to L1. The L2 receiver sends a `CollateralReturned` LayerZero message including the Socket `messageId` so L1 can finalize once the bridge completes. Returns are only supported while collateral remains in `pending`; activation should occur immediately before trade execution. If collateral is moved to `active` but the RFQ trade fails, the executor may transfer collateral from `active` back to `pending` using the Transfer Module, provided aggregate coverage remains (`baseBalance - amount >= shortCalls`) and the cash balance stays within limits.
 
 ### 3.2 Collateral withdrawal (L2 -> L1)
 
@@ -81,14 +81,23 @@ Derive uses smart-contract wallets to control subaccounts. The L2 TSA contract (
 - Checks the nonce and calls `IERC20BasedAsset.withdraw` to withdraw the specified amount from the subaccount to the owner.
 - The TSA only allows withdrawals of the wrapped collateral asset and the cash asset (USDC). Cash withdrawals are limited to the available positive cash balance (no additional borrowing via withdrawal).
 
-### 4.4 Trade Module
+### 4.4 Transfer Module
+
+`TransferModule` moves assets between subaccounts owned by the same TSA:
+
+- Used to move collateral from the `pending` subaccount into the `active` subaccount before opening a collar.
+- Requires two signed actions (from and to), both owned by the TSA.
+- Only the wrapped collateral asset (subId 0) is transferred; no cash or option positions move in this step.
+- In recovery scenarios where collateral was activated but the RFQ trade failed, the executor may transfer collateral from `active` back to `pending` if aggregate coverage remains (`baseBalance - amount >= shortCalls`) and cash stays within the configured negative balance limit.
+
+### 4.5 Trade Module
 
 `TradeModule` executes limit orders:
 
 - The `executeAction` function processes a batch of `VerifiedAction` objects: the taker (the vault) followed by one or more makers (MMs). It verifies order nonces, decodes order data and trade data, updates oracles if needed, and batches asset transfers. It charges taker fees and matches orders via `_fillLimitOrder`.
 - `_fillLimitOrder` enforces price slippage limits, ensures the fill does not exceed the maker's limit or the vault's own maximum, updates filled amounts and adds asset transfers for quote and base token flows.
 
-### 4.5 Strategy contracts
+### 4.6 Strategy contracts
 
 Derive provides various strategy contracts (e.g., CCTSA for covered calls, PPTSA for put spreads). Each extends `CollateralManagementTSA`, which includes deposit/withdraw verification and risk parameters. CollarFi can implement its own strategy contract by inheriting from `CollateralManagementTSA` and overriding `_verifyAction` to enforce conditions specific to zero-cost collars (e.g., strike bounds, maturity windows, option limit prices). The strategy contract may also set management and performance fees for the vault (see Derive docs).
 
@@ -98,11 +107,13 @@ Derive provides various strategy contracts (e.g., CCTSA for covered calls, PPTSA
 
 **User input**: Borrower selects collateral asset `Q`, amount and maturity `t` (must match a Derive-defined expiry). They choose a put strike `K_p` (from a tier) and request to borrow USDC amount `D`.
 
-**Collateral deposit (L1 -> L2)**: The vault contract receives the collateral from the borrower, calls the fast bridge to send it to Derive L2 and waits for confirmation. The loan is placed in a pending-deposit state until L2 confirmation and Derive subaccount deposit finalize.
+**RFQ (off-chain)**: The vault executor queries market makers to provide quotes for the call strike `K_c` such that the call premium minus the put premium equals or exceeds the target cost of capital (Euler rate + risk premium and, if needed, settlement drag). The borrower accepts a quote off-chain; quotes are EIP-712 signed and verified on-chain in `createLoanWithPermit`. Strike tiers are defined off-chain; the vault does not maintain an on-chain tier list.
 
-**Subaccount deposit**: After the collateral arrives on L2, the executor calls the Deposit Module with action data (asset: `Q`, amount: `Q`, `managerForNewAccount: true` if new subaccount). This deposits the collateral into the vault's subaccount.
+**Collateral deposit (L1 -> L2)**: After accepting a quote, the borrower calls `createLoanWithPermit` on L1 with a Permit2 signature for the collateral. The vault pulls the collateral via Permit2, calls the fast bridge to send it to Derive L2 and waits for confirmation. The loan is placed in a pending-deposit state until L2 confirmation and Derive subaccount deposit finalize. The quote is validated and stored during `createLoanWithPermit` so the borrower does not need a second on-chain transaction.
 
-**RFQ (off-chain)**: After collateral is confirmed in the Derive subaccount, the vault executor queries market makers to provide quotes for the call strike `K_c` such that the call premium minus the put premium equals or exceeds the target cost of capital (Euler rate + risk premium and, if needed, settlement drag). Quotes are EIP-712 signed and verified on-chain in `createLoan`. Strike tiers are defined off-chain; the vault does not maintain an on-chain tier list.
+**Subaccount deposit**: After the collateral arrives on L2, the executor calls the Deposit Module with action data (asset: `Q`, amount: `Q`, `managerForNewAccount: true` if new subaccount). This deposits the collateral into the vault's `pending` subaccount.
+
+**Collateral activation**: Immediately before executing the RFQ trade, the executor transfers the collateral from the `pending` subaccount to the `active` subaccount using Derive's Transfer Module. The L2 receiver does not send a separate activation acknowledgment; activation is recorded on L1 when the `TradeConfirmed` message is consumed.
 
 **Open collar**: The executor signs and submits an RFQ taker action on Derive:
 
@@ -111,11 +122,11 @@ Derive provides various strategy contracts (e.g., CCTSA for covered calls, PPTSA
 
 No partial fills are allowed; the orders must be fully matched. The trade must conform to risk limits (e.g., delta within bounds) enforced by the strategy contract. Derive matches the order against market makers and settles the trade, crediting or debiting the subaccount accordingly.
 
-After the RFQ taker action is executed, the L2 receiver verifies `RfqModule.usedNonces[vaultTSA][takerNonce] == true` and sends a `TradeConfirmed` LayerZero message back to L1. The taker nonce is set to the quote nonce so each RFQ attempt has a unique confirmation. The `TradeConfirmed` message includes the USDC fee amount bridged to L1 and the Socket `messageId` for that fee withdrawal.
+After the RFQ taker action is executed from the `active` subaccount, the L2 receiver verifies `RfqModule.usedNonces[vaultTSA][takerNonce] == true` and sends a `TradeConfirmed` LayerZero message back to L1. The taker nonce is set to the quote nonce so each RFQ attempt has a unique confirmation. The `TradeConfirmed` message includes the USDC fee amount bridged to L1 and the Socket `messageId` for that fee withdrawal.
 
-**Loan disbursement**: On L1, `createLoan` consumes the `DepositConfirmed` LayerZero message for the matching `loanId` (recipient must be the vault, asset/amount must match) and a `TradeConfirmed` LayerZero message that includes the `quoteHash`, `takerNonce` (must match the quote nonce), USDC fee amount, and the Socket `messageId` for the fee withdrawal. The vault computes the expected origination fee from `originationFeeApr` and loan duration and requires it to match the bridged amount. The fee is split between the liquidity vault and treasury using `treasuryBps` and paid at loan creation. After fee distribution, the vault contract withdraws USDC from the liquidity vault (Euler pool) equal to `D` and transfers it to the borrower. It records loan state `ACTIVE_ZERO_COST`, storing a global sequential `loanId`, `Q`, `K_p`, `K_c`, `t`, principal `D` and subaccount ID.
+**Loan disbursement**: On L1, `finalizeLoan` (keeper/executor) consumes the `DepositConfirmed` LayerZero message for the matching `loanId` (recipient must be the vault, asset/amount must match) and consumes a `TradeConfirmed` LayerZero message that includes the `quoteHash`, `takerNonce` (must match the quote nonce), USDC fee amount, and the Socket `messageId` for the fee withdrawal. The vault computes the expected origination fee from `originationFeeApr` and loan duration and requires it to match the bridged amount. The fee is split between the liquidity vault and treasury using `treasuryBps` and paid at loan creation. After fee distribution, the vault contract withdraws USDC from the liquidity vault (Euler pool) equal to `D` and transfers it to the borrower. It records loan state `ACTIVE_ZERO_COST`, storing a global sequential `loanId`, `Q`, `K_p`, `K_c`, `t`, principal `D` and active subaccount ID.
 
-**Cancellation before trade**: If the RFQ is rejected or expires before the collar is opened, the borrower calls `requestCancelDeposit(loanId)` on L1. The vault sends a `CancelRequest` LayerZero message to L2, and the receiver signs a Withdrawal Module action. After the collateral is bridged back to L1, the L2 receiver sends a `CollateralReturned` message; an L1 transaction consumes it, clears the pending deposit, and transfers the collateral back to the borrower. No variable loan is opened for cancelled deposits, and subsequent loan creation with that pending deposit is prevented.
+**Return before trade**: If the RFQ is rejected, expires, or cannot be executed after the collateral deposit, the executor calls `requestCollateralReturn(loanId)` on L1. The vault sends a `ReturnRequest` LayerZero message to L2, and the receiver signs a Withdrawal Module action from the `pending` subaccount. After the collateral is bridged back to L1, the L2 receiver sends a `CollateralReturned` message; an L1 transaction consumes it, clears the pending deposit, and transfers the collateral back to the borrower. No variable loan is opened for returned deposits, and subsequent loan creation with that pending deposit is prevented.
 
 ### 5.2 Maturity settlement
 
@@ -170,9 +181,9 @@ Maintains L1 loan records, collateral amounts, and maturity schedules. It relies
 
 Provides functions:
 
-- `requestCollateralDeposit(collateralAsset, collateralAmount, maturity)` - permissionless; receives collateral, calls the bridge, and records a pending deposit awaiting L2 confirmation.
-- `requestCancelDeposit(loanId)` - permissionless for the borrower while the deposit is pending; sends a `CancelRequest` message to L2 to initiate withdrawal.
-- `createLoan(collateralAsset, collateralAmount, maturity, Kp, borrowAmount, depositGuid, tradeGuid)` - permissionless; only after L2 confirmation and RFQ; consumes `DepositConfirmed` + `TradeConfirmed` and disburses the loan.
+- `createLoanWithPermit(quote, quoteSig, permit, permitSig)` - permissionless; validates the quote, pulls collateral via Permit2, calls the bridge, and records a pending deposit awaiting L2 confirmation.
+- `requestCollateralReturn(loanId)` - keeper/executor; sends a `ReturnRequest` message to L2 to initiate withdrawal from the `pending` subaccount.
+- `finalizeLoan(loanId, depositGuid, tradeGuid)` - keeper/executor; consumes `DepositConfirmed` and `TradeConfirmed` messages to open the loan and disburse USDC.
 - `finalizeDepositReturn(loanId, lzGuid)` - permissionless; consumes the L2 `CollateralReturned` message for a pending deposit and transfers collateral back to the borrower.
 - `settleLoan(loanId)` - restricted to keeper/executor roles; closes positions and initiates bridging of proceeds.
 - `convertToVariable(loanId)` - restricted to keeper/executor roles; bridges collateral back and interacts with Euler.
@@ -187,18 +198,18 @@ Runs a secure service that:
 - Posts actions to Derive's API (e.g., `/post_private-order` for trades).
 - Submits trades via the Trade Module, matching orders with market makers.
 - Monitors oracle prices and maturity times; triggers settlement via the vault contract.
-- Monitors pending collateral deposits, confirms L2 subaccount credit before RFQ/trade, and handles cancellation withdrawals.
+- Monitors pending collateral deposits, confirms L2 subaccount credit before RFQ/trade, and handles return withdrawals.
 - Interacts with the fast bridge and deposit/withdraw handlers.
 
 ### 6.3 Liquidity vault (USDC pool)
 
 Implements ERC-4626 for lenders. Idle USDC is deposited into Euler V2; variable-rate earnings accrue to lenders.
 
-Tracks three balances: `availableLiquidity`, `activeLoans` and `inFlight` (though in-flight may be zero with fast bridge). Lenders can withdraw even if `inFlight` > 0; accounting treatment is specified in the clarifications section.
+Tracks two balances: `availableLiquidity` and `activeLoans`. Lenders can withdraw up to available liquidity; settlement proceeds are reflected once bridged to L1.
 
 Exposes functions `borrow(uint256 amount)` and `repay(uint256 amount)` for the vault contract.
 
-May cap the total notional per maturity bucket and total in-flight settlement to manage risk.
+May cap the total notional per maturity bucket to manage risk.
 
 ### 6.4 Euler integration
 
@@ -216,7 +227,7 @@ Events on the bridge are monitored by the deposit/withdraw handlers to trigger m
 
 A separate off-chain module handles quoting. It queries MMs for call strike quotes given the borrower's requested principal and put strike. It ensures the call premium minus put premium meets the target cost of capital (Euler rate + risk premium). Settlement drag is negligible due to fast bridging.
 
-The RFQ module produces EIP-712 signed quotes that are verified on-chain in `createLoan`.
+The RFQ module produces EIP-712 signed quotes that are verified on-chain in `createLoanWithPermit`.
 
 ### 6.7 Keeper and monitoring
 
@@ -236,12 +247,14 @@ Monitors for situations such as the bridge being down or fast withdrawal limits 
 - Settlement amount trust: The executor is trusted to compute and report the final settlement amount (including collateral sale proceeds) in `SettlementReport`.
 - Derive cash balance risk: Call ITM settlement may result in a negative USDC balance on Derive; ensure the collateral sale fully nets the negative balance before bridging, and account for potential L1 backstop usage if net proceeds are below principal.
 - Socket message ID trust: `TradeConfirmed` includes a Socket `messageId` provided by the L2 executor; the system trusts the executor to supply the correct bridge message ID and amount for the origination fee withdrawal.
+- Activation trust: Collateral activation (pending -> active) is performed off-chain by the executor once the deposit is confirmed; L1 does not authorize or verify the activation timing.
+- Aggregate coverage transfers: Active -> pending transfers are only permitted if `baseBalance - amount >= shortCalls` and cash stays above `maxNegCash`; because the active subaccount is shared, this is an aggregate (not per-loan) invariant and relies on correct executor operation.
 - Role-based parameter changes: Strike bounds, slippage tolerances, market allowlists and other risk parameters are adjustable by a role controlled by a multisig; governance modules may replace this role later.
 - Emergency controls: The protocol supports emergency controls to pause new loans and settlement.
 
 ## 8. Deployment and Configuration
 
-- Deploy the L2 TSA contract inheriting from `BaseOnChainSigningTSA`. Configure authorized signers/submitters, derivative asset addresses and Derive subaccount.
+- Deploy the L2 TSA contract inheriting from `BaseOnChainSigningTSA`. Configure authorized signers/submitters, derivative asset addresses, the active subaccount, and the pending subaccount used for deposits before activation.
 - Deploy the liquidity vault (ERC-4626), integrate with Euler V2 and configure deposit/withdraw functions for the vault contract.
 - Set up the fast bridge by referencing the Derive bridge contract addresses for each asset and granting necessary approvals.
 - Deploy the strategy contract if risk checks or fee schedules are custom. Otherwise, reuse Derive's existing modules.
@@ -255,8 +268,7 @@ Monitors for situations such as the bridge being down or fast withdrawal limits 
 The following items are not yet specified and require clarification before implementation:
 
 - Trade verification: implemented via `TradeConfirmed` LZ message after `RfqModule.usedNonces` is set for the taker nonce (quote nonce).
-- In-flight accounting: how `inFlight` balances affect liquidity vault share price and withdrawal limits.
-- Shared subaccount accounting: per-loan balance checks are not possible with current Derive action formats. Review whether aggregated withdrawals introduce an attack vector (e.g., withdrawing collateral tied to other active loans) and whether a protocol-level withdrawal pause or stricter withdrawal gating is required.
+- Shared active subaccount accounting: per-loan balance checks are not possible with current Derive action formats. Review whether aggregated withdrawals introduce an attack vector and whether a protocol-level withdrawal pause or stricter withdrawal gating is required.
 - On-chain bounds: whether any on-chain strike/maturity bounds or whitelists should be enforced, or if these are executor-only checks.
 - Maturity enforcement: whether Derive-defined maturities are enforced on-chain or only by the executor.
 - Origination fee timing: fee is annualized, funded from net option premium, and paid at loan creation after the fee withdrawal is bridged to L1.

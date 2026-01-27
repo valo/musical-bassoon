@@ -75,7 +75,9 @@ contract CollarTSATestUtils is TSATestUtils {
           withdrawalModule: withdrawalModule,
           tradeModule: tradeModule,
           rfqModule: rfqModule,
-          optionAsset: optionAsset
+          transferModule: transferModule,
+          optionAsset: optionAsset,
+          pendingSubaccountId: 0
         })
       )
     );
@@ -99,6 +101,8 @@ contract CollarTSATestUtils is TSATestUtils {
 
     CollarTSA(address(tsa)).setCollarTSAParams(defaultCollarParams);
     CollarTSA(address(tsa)).setCollateralManagementParams(defaultCollateralManagementParams);
+    CollarTSA(address(tsa)).setTransferModule(transferModule);
+    CollarTSA(address(tsa)).setPendingSubaccountId(tsaSubacc);
 
     tsa.setShareKeeper(address(this), true);
 
