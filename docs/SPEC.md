@@ -126,7 +126,73 @@ After the RFQ taker action is executed from the `active` subaccount, the L2 rece
 
 **Loan disbursement**: On L1, `finalizeLoan` (keeper/executor) consumes the `DepositConfirmed` LayerZero message for the matching `loanId` (recipient must be the vault, asset/amount must match) and consumes a `TradeConfirmed` LayerZero message that includes the `quoteHash`, `takerNonce` (must match the quote nonce), USDC fee amount, and the Socket `messageId` for the fee withdrawal. The vault computes the expected origination fee from `originationFeeApr` and loan duration and requires it to match the bridged amount. The fee is split between the liquidity vault and treasury using `treasuryBps` and paid at loan creation. After fee distribution, the vault contract withdraws USDC from the liquidity vault (Euler pool) equal to `D` and transfers it to the borrower. It records loan state `ACTIVE_ZERO_COST`, storing a global sequential `loanId`, `Q`, `K_p`, `K_c`, `t`, principal `D` and active subaccount ID.
 
+```mermaid
+sequenceDiagram
+  actor Borrower
+  actor Keeper
+  participant Vault as L1 CollarVault
+  participant LZ as L1 CollarVaultMessenger
+  participant Socket as Socket Bridge
+  participant L2Recv as L2 CollarTSAReceiver
+  participant TSA as L2 CollarTSA
+  participant Deposit as Derive DepositModule
+  participant Transfer as Derive TransferModule
+  participant Match as Derive Matching/RfqModule
+  participant Liquidity as L1 CollarLiquidityVault
+  participant Treasury as L1 Treasury
+
+  Borrower->>Vault: createLoanWithPermit(quote, permit)
+  Vault->>Socket: _bridgeToL2(collateral)
+  Vault->>LZ: sendMessage(DepositIntent)
+  LZ-->>L2Recv: LZ DepositIntent
+  Keeper->>L2Recv: handleMessage(guid)
+  L2Recv->>TSA: signActionData(DepositModule)
+  TSA->>Deposit: executeAction(pending)
+  L2Recv-->>LZ: send DepositConfirmed
+  Keeper->>TSA: signActionData(TransferModule)
+  TSA->>Transfer: executeAction(pending->active)
+  Keeper->>TSA: signActionData(RFQ taker)
+  Keeper->>Match: verifyAndMatch(...)
+  Note over Keeper,Socket: Withdraw origination fee (WithdrawalModule + Socket)
+  Keeper->>L2Recv: sendTradeConfirmed(loanId, fee, socketMessageId)
+  L2Recv-->>LZ: send TradeConfirmed
+  Keeper->>Vault: finalizeLoan(loanId, depositGuid, tradeGuid)
+  Vault->>Treasury: transfer fee cut
+  Vault->>Liquidity: transfer fee cut
+  Vault->>Liquidity: borrow(D)
+  Vault->>Borrower: transfer USDC principal
+```
+
 **Return before trade**: If the RFQ is rejected, expires, or cannot be executed after the collateral deposit, the executor calls `requestCollateralReturn(loanId)` on L1. The vault sends a `ReturnRequest` LayerZero message to L2, and the receiver signs a Withdrawal Module action from the `pending` subaccount. After the collateral is bridged back to L1, the L2 receiver sends a `CollateralReturned` message; an L1 transaction consumes it, clears the pending deposit, and transfers the collateral back to the borrower. No variable loan is opened for returned deposits, and subsequent loan creation with that pending deposit is prevented.
+
+```mermaid
+sequenceDiagram
+  actor Keeper
+  actor Borrower
+  participant Vault as L1 CollarVault
+  participant LZ as L1 CollarVaultMessenger
+  participant Socket as Socket Bridge
+  participant L2Recv as L2 CollarTSAReceiver
+  participant TSA as L2 CollarTSA
+  participant Transfer as Derive TransferModule
+  participant Withdraw as Derive WithdrawalModule
+
+  opt If collateral was activated but RFQ failed
+    Keeper->>TSA: signActionData(TransferModule)
+    TSA->>Transfer: executeAction(active->pending)
+  end
+  Keeper->>Vault: requestCollateralReturn(loanId)
+  Vault->>LZ: sendMessage(ReturnRequest)
+  LZ-->>L2Recv: LZ ReturnRequest
+  Keeper->>L2Recv: handleMessage(guid)
+  L2Recv->>TSA: signActionData(WithdrawalModule)
+  TSA->>Withdraw: executeAction(pending)
+  Keeper->>Socket: bridge collateral to L1
+  Keeper->>L2Recv: sendCollateralReturned(loanId, amount, socketMessageId)
+  L2Recv-->>LZ: send CollateralReturned
+  Borrower->>Vault: finalizeDepositReturn(loanId, lzGuid)
+  Vault->>Borrower: transfer collateral
+```
 
 ### 5.2 Maturity settlement
 
@@ -140,12 +206,59 @@ At maturity `t`, the executor (or a keeper) settles the collar position on Deriv
 - All USDC proceeds (including the put payoff) are withdrawn via the Withdrawal Module. The fast bridge is used to send funds back to L1.
 - On L1, the vault contract repays the principal `D` to the lending pool. If proceeds exceed `D`, the excess is distributed between the liquidity vault and protocol treasury according to a governance-configurable split. The loan state becomes `CLOSED` after bridged funds arrive.
 
+```mermaid
+sequenceDiagram
+  actor Borrower
+  actor Keeper
+  participant TSA as L2 CollarTSA
+  participant Match as Derive Matching/RfqModule
+  participant Withdraw as Derive WithdrawalModule
+  participant Socket as Socket Bridge
+  participant L2Recv as L2 CollarTSAReceiver
+  participant LZ as L1 CollarVaultMessenger
+  participant Vault as L1 CollarVault
+  participant Liquidity as L1 CollarLiquidityVault
+  participant Treasury as L1 Treasury
+
+  Keeper->>TSA: signActionData(spot RFQ taker)
+  Keeper->>Match: verifyAndMatch(spot RFQ)
+  Keeper->>TSA: signActionData(WithdrawalModule USDC)
+  Keeper->>Socket: bridge USDC to L1
+  Keeper->>L2Recv: sendSettlementReport(loanId, usdcAmount, socketMessageId)
+  L2Recv-->>LZ: send SettlementReport
+  Keeper->>Vault: settleLoan(loanId, PutITM, lzGuid)
+  Vault->>Liquidity: repay(principal)
+  Vault->>Treasury: transfer surplus cut
+  Vault->>Liquidity: transfer surplus cut
+```
+
 #### Outcome 2: Neutral corridor (`K_p <= S_t <= K_c`)
 
 - Both options expire OTM. The collateral remains on Derive and is not encumbered.
 - The vault contract bridges the collateral back to L1 via the fast bridge. The L2 receiver sends a `CollateralReturned` message with the Socket `messageId` so L1 can finalize the conversion once the bridge completes.
 - On L1, the collateral is deposited into the Euler V2 market as standard collateral. The borrower may immediately borrow USDC up to a variable rate (subject to Euler's LTV). This variable-rate loan repays the original principal `D`, converting the zero-cost loan to a `VARIABLE` loan.
 - The borrower's position remains liquidatable by Euler if the collateral price drops.
+
+```mermaid
+sequenceDiagram
+  actor Keeper
+  participant TSA as L2 CollarTSA
+  participant Withdraw as Derive WithdrawalModule
+  participant Socket as Socket Bridge
+  participant L2Recv as L2 CollarTSAReceiver
+  participant LZ as L1 CollarVaultMessenger
+  participant Vault as L1 CollarVault
+  participant Euler as L1 EulerAdapter
+  participant Liquidity as L1 CollarLiquidityVault
+
+  Keeper->>TSA: signActionData(WithdrawalModule collateral)
+  Keeper->>Socket: bridge collateral to L1
+  Keeper->>L2Recv: sendCollateralReturned(loanId, amount, socketMessageId)
+  L2Recv-->>LZ: send CollateralReturned
+  Keeper->>Vault: settleLoan(loanId, Neutral, lzGuid)
+  Vault->>Euler: depositCollateral + borrow(USDC)
+  Vault->>Liquidity: repay(principal)
+```
 
 #### Outcome 3: Call ITM / Take profit (`S_t > K_c`)
 
@@ -156,6 +269,31 @@ At maturity `t`, the executor (or a keeper) settles the collar position on Deriv
 - Only the net positive USDC balance (after the call payoff and any negative cash balance are covered) is withdrawn via the Withdrawal Module and bridged to L1.
 - On L1, the vault repays principal `D` to the lending pool from the bridged USDC. If the net bridged amount is insufficient to repay `D`, the protocol backstops the shortfall with L1 liquidity; the borrower receives zero in this case.
 - If the net bridged amount exceeds `D`, the excess belongs to the borrower. The vault contract does not make optimistic payouts; the loan state becomes `CLOSED` after bridged funds arrive.
+
+```mermaid
+sequenceDiagram
+  actor Keeper
+  participant TSA as L2 CollarTSA
+  participant Match as Derive Matching/RfqModule
+  participant Withdraw as Derive WithdrawalModule
+  participant Socket as Socket Bridge
+  participant L2Recv as L2 CollarTSAReceiver
+  participant LZ as L1 CollarVaultMessenger
+  participant Vault as L1 CollarVault
+  participant Liquidity as L1 CollarLiquidityVault
+
+  Keeper->>TSA: signActionData(spot RFQ taker)
+  Keeper->>Match: verifyAndMatch(spot RFQ)
+  Note over Keeper,TSA: Net negative cash via collateral sale
+  Keeper->>TSA: signActionData(WithdrawalModule net USDC)
+  Keeper->>Socket: bridge net USDC to L1
+  Keeper->>L2Recv: sendSettlementReport(loanId, usdcAmount, socketMessageId)
+  L2Recv-->>LZ: send SettlementReport
+  Keeper->>Vault: settleLoan(loanId, CallITM, lzGuid)
+  Vault->>Liquidity: repay(principal or writeOff)
+  Vault->>Liquidity: writeOff(shortfall if any)
+  Vault->>Borrower: transfer excess (if any)
+```
 
 ### 5.3 Variable-rate conversion (neutral corridor)
 
