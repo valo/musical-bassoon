@@ -105,6 +105,8 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
   address public treasury;
   uint256 public treasuryBps;
   uint256 public originationFeeApr;
+  uint256 public maxTotalPrincipal;
+  uint256 public totalCommittedPrincipal;
   uint256 public deriveSubaccountId;
   uint256 public pendingSubaccountId;
   uint256 public nextLoanId = 1;
@@ -152,6 +154,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
   error CV_PermitSpenderMismatch();
   error CV_PermitAmountTooLow();
   error CV_PermitAmountOverflow();
+  error CV_TotalPrincipalCapExceeded();
 
   event LoanCreated(
     uint256 indexed loanId,
@@ -171,6 +174,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
   event LoanClosed(uint256 indexed loanId);
   event TreasuryUpdated(address indexed treasury, uint256 bps);
   event OriginationFeeAprUpdated(uint256 feeApr);
+  event MaxTotalPrincipalUpdated(uint256 maxTotalPrincipal);
   event CollateralConfigUpdated(address indexed asset, bool allowed, uint256 strikeScale);
   event BridgeConfigUpdated(
     address indexed asset,
@@ -267,6 +271,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
       revert CV_InvalidMaturity();
     }
     _validateBorrowAmount(quote);
+    _commitPrincipal(quote.borrowAmount);
     _validatePermit(quote, permit);
     if (quote.collateralAmount > type(uint160).max) {
       revert CV_PermitAmountOverflow();
@@ -385,6 +390,10 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     if (pending.borrower == address(0)) {
       revert CV_PendingDepositNotFound();
     }
+    Quote memory quote = pendingQuotes[loanId];
+    if (quote.collateralAsset == address(0)) {
+      revert CV_PendingQuoteNotFound();
+    }
     if (pending.collateralAsset != lzMessage.asset || pending.collateralAmount != lzMessage.amount) {
       revert CV_LZMessageMismatch();
     }
@@ -393,6 +402,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     }
 
     delete pendingDeposits[loanId];
+    _releaseCommittedPrincipal(quote.borrowAmount);
     delete pendingQuotes[loanId];
     IERC20(pending.collateralAsset).safeTransfer(pending.borrower, pending.collateralAmount);
     emit CollateralDepositReturned(loanId, pending.borrower, pending.collateralAsset, pending.collateralAmount);
@@ -477,6 +487,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
       }
     }
 
+    _releaseCommittedPrincipal(loan.principal);
     loan.state = LoanState.CLOSED;
     emit LoanSettled(loanId, outcome, settlementAmount);
     emit LoanClosed(loanId);
@@ -670,6 +681,12 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     emit OriginationFeeAprUpdated(feeApr);
   }
 
+  /// @notice Update the maximum total committed principal (0 disables the cap).
+  function setMaxTotalPrincipal(uint256 maxPrincipal) external onlyRole(PARAMETER_ROLE) {
+    maxTotalPrincipal = maxPrincipal;
+    emit MaxTotalPrincipalUpdated(maxPrincipal);
+  }
+
   /// @notice Allow or revoke a quote signer.
   function setQuoteSigner(address signer, bool allowed) external onlyRole(PARAMETER_ROLE) {
     if (signer == address(0)) {
@@ -756,6 +773,24 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     uint256 duration = quote.maturity - block.timestamp;
     uint256 annualFee = Math.mulDiv(quote.borrowAmount, originationFeeApr, 1e18);
     return Math.mulDiv(annualFee, duration, YEAR);
+  }
+
+  function _commitPrincipal(uint256 amount) internal {
+    if (amount == 0) {
+      return;
+    }
+    uint256 cap = maxTotalPrincipal;
+    if (cap != 0 && totalCommittedPrincipal + amount > cap) {
+      revert CV_TotalPrincipalCapExceeded();
+    }
+    totalCommittedPrincipal += amount;
+  }
+
+  function _releaseCommittedPrincipal(uint256 amount) internal {
+    if (amount == 0) {
+      return;
+    }
+    totalCommittedPrincipal -= amount;
   }
 
   function _requestCollateralDeposit(address borrower, Quote calldata quote)
@@ -911,6 +946,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     if (collateralAmount != loan.collateralAmount) {
       revert CV_InvalidAmount();
     }
+    _releaseCommittedPrincipal(loan.principal);
     IERC20(loan.collateralAsset).safeIncreaseAllowance(address(eulerAdapter), collateralAmount);
     eulerAdapter.depositCollateral(loan.collateralAsset, collateralAmount, loan.borrower);
     eulerAdapter.borrow(address(usdc), loan.principal, loan.borrower, address(this));

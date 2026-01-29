@@ -116,6 +116,54 @@ contract CollarVaultTest is Test {
     assertEq(liquidityVault.activeLoans(), quote.borrowAmount);
   }
 
+  function testCreateLoanRespectsTotalPrincipalCap() public {
+    CollarVault.Quote memory quote = _quote(1, borrower);
+    vault.setMaxTotalPrincipal(quote.borrowAmount);
+    bytes memory sig = _signQuote(quote);
+    uint256 loanId = _requestLoan(quote, sig);
+
+    assertEq(vault.totalCommittedPrincipal(), quote.borrowAmount);
+
+    CollarVault.Quote memory secondQuote = _quote(2, borrower);
+    bytes memory secondSig = _signQuote(secondQuote);
+    IAllowanceTransfer.PermitSingle memory permit = _buildPermit(secondQuote.collateralAsset, secondQuote.collateralAmount);
+    bytes memory permitSig = permit2Signer.signPermitSingle(borrowerKey, permit);
+
+    vm.startPrank(borrower);
+    vm.expectRevert(CollarVault.CV_TotalPrincipalCapExceeded.selector);
+    vault.createLoanWithPermit(secondQuote, secondSig, permit, permitSig);
+    vm.stopPrank();
+    permitNonce -= 1;
+
+    wbtc.mint(address(vault), quote.collateralAmount);
+    vm.prank(keeper);
+    vault.requestCollateralReturn(loanId);
+
+    bytes32 guid = _recordLZMessage(
+      CollarLZMessages.Message({
+        action: CollarLZMessages.Action.CollateralReturned,
+        loanId: loanId,
+        asset: address(wbtc),
+        amount: quote.collateralAmount,
+        recipient: address(vault),
+        subaccountId: vault.pendingSubaccountId(),
+        socketMessageId: bytes32(0),
+        secondaryAmount: 0,
+        quoteHash: bytes32(0),
+        takerNonce: 0
+      })
+    );
+
+    vault.finalizeDepositReturn(loanId, guid);
+    assertEq(vault.totalCommittedPrincipal(), 0);
+
+    IAllowanceTransfer.PermitSingle memory nextPermit = _buildPermit(secondQuote.collateralAsset, secondQuote.collateralAmount);
+    bytes memory nextPermitSig = permit2Signer.signPermitSingle(borrowerKey, nextPermit);
+    vm.startPrank(borrower);
+    vault.createLoanWithPermit(secondQuote, secondSig, nextPermit, nextPermitSig);
+    vm.stopPrank();
+  }
+
   function testCreateLoanRejectsExpiredQuote() public {
     CollarVault.Quote memory quote = _quote(1, borrower);
     quote.quoteExpiry = block.timestamp - 1;
@@ -510,6 +558,7 @@ contract CollarVaultTest is Test {
     vault.settleLoan(loanId, CollarVault.SettlementOutcome.Neutral, guid);
 
     assertEq(uint256(vault.getLoan(loanId).state), uint256(CollarVault.LoanState.ACTIVE_VARIABLE));
+    assertEq(vault.totalCommittedPrincipal(), 0);
     assertEq(eulerAdapter.debts(borrower), loan.principal);
 
     usdc.mint(borrower, loan.principal);

@@ -107,7 +107,7 @@ Derive provides various strategy contracts (e.g., CCTSA for covered calls, PPTSA
 
 **User input**: Borrower selects collateral asset `Q`, amount and maturity `t` (must match a Derive-defined expiry). They choose a put strike `K_p` (from a tier) and request to borrow USDC amount `D`.
 
-**RFQ (off-chain)**: The vault executor queries market makers to provide quotes for the call strike `K_c` such that the call premium minus the put premium equals or exceeds the target cost of capital (Euler rate + risk premium and, if needed, settlement drag). The borrower accepts a quote off-chain; quotes are EIP-712 signed and verified on-chain in `createLoanWithPermit`. Strike tiers are defined off-chain; the vault does not maintain an on-chain tier list.
+**RFQ (off-chain)**: The vault executor queries market makers to provide quotes for the call strike `K_c` such that the call premium minus the put premium equals or exceeds the target cost of capital (Euler rate + risk premium and, if needed, settlement drag). The borrower accepts a quote off-chain; quotes are EIP-712 signed and verified on-chain in `createLoanWithPermit`. Strike tiers and valid Derive maturities are enforced by the executor; the vault does not maintain an on-chain tier list or expiry whitelist.
 
 **Collateral deposit (L1 -> L2)**: After accepting a quote, the borrower calls `createLoanWithPermit` on L1 with a Permit2 signature for the collateral. The vault pulls the collateral via Permit2, calls the fast bridge to send it to Derive L2 and waits for confirmation. The loan is placed in a pending-deposit state until L2 confirmation and Derive subaccount deposit finalize. The quote is validated and stored during `createLoanWithPermit` so the borrower does not need a second on-chain transaction.
 
@@ -327,12 +327,13 @@ Maintains L1 loan records, collateral amounts, and maturity schedules. It relies
 
 Provides functions:
 
-- `createLoanWithPermit(quote, quoteSig, permit, permitSig)` - permissionless; validates the quote, pulls collateral via Permit2, calls the bridge, and records a pending deposit awaiting L2 confirmation.
+- `createLoanWithPermit(quote, quoteSig, permit, permitSig)` - permissionless; validates the quote, enforces the total committed principal cap (if set), pulls collateral via Permit2, calls the bridge, and records a pending deposit awaiting L2 confirmation.
 - `requestCollateralReturn(loanId)` - keeper/executor; sends a `ReturnRequest` message to L2 to initiate withdrawal from the `pending` subaccount.
 - `finalizeLoan(loanId, depositGuid, tradeGuid)` - keeper/executor; consumes `DepositConfirmed` and `TradeConfirmed` messages to open the loan and disburse USDC.
 - `finalizeDepositReturn(loanId, lzGuid)` - permissionless; consumes the L2 `CollateralReturned` message for a pending deposit and transfers collateral back to the borrower.
-- `settleLoan(loanId)` - restricted to keeper/executor roles; closes positions and initiates bridging of proceeds.
-- `convertToVariable(loanId)` - restricted to keeper/executor roles; bridges collateral back and interacts with Euler.
+- `settleLoan(loanId)` - restricted to keeper/executor roles; closes positions and initiates bridging of proceeds. Reverts on-chain if `block.timestamp < maturity`.
+- `convertToVariable(loanId)` - restricted to keeper/executor roles; bridges collateral back and interacts with Euler. Reverts on-chain if `block.timestamp < maturity`.
+- `setMaxTotalPrincipal(max)` - parameter role; caps the total committed principal (pending + active zero-cost loans) to scale TVL gradually.
 
 Exposes events for state changes (`LoanCreated`, `LoanSettled`, etc.).
 
@@ -386,6 +387,7 @@ Monitors for situations such as the bridge being down or fast withdrawal limits 
 - Signature authenticity: Only authorized signers can sign Derive actions; signatures are validated via ERC-1271 in the L2 TSA contract (see Derive official docs: https://docs.derive.xyz/).
 - Replay protection: Nonces are stored per action; signed data cannot be reused or submitted by unauthorized parties.
 - Market risk parameters: The strategy contract may set strike ranges, time-to-expiry bounds, and slippage tolerances. The vault must ensure the collateral covers all short calls and that no deposit/withdraw actions leave the subaccount insolvent.
+- Origination cap: The L1 vault enforces a maximum total committed principal (pending + active zero-cost loans) to limit aggregate exposure.
 - Bridge limits: The fast bridge has daily deposit/withdraw limits (see Derive official docs: https://docs.derive.xyz/). The vault should track cumulative amounts and throttle operations if limits are approached.
 - Liquidation risk: Variable-rate loans on Euler are subject to liquidation. The protocol relies on Euler's liquidation mechanisms rather than triggering forced sales.
 - Withdrawal race conditions: Because bridging is asynchronous, ensure that bridging calls are idempotent and that funds are not double-counted.
@@ -415,7 +417,7 @@ The following items are not yet specified and require clarification before imple
 
 - Trade verification: implemented via `TradeConfirmed` LZ message after `RfqModule.usedNonces` is set for the taker nonce (quote nonce).
 - Shared active subaccount accounting: per-loan balance checks are not possible with current Derive action formats. Review whether aggregated withdrawals introduce an attack vector and whether a protocol-level withdrawal pause or stricter withdrawal gating is required.
-- On-chain bounds: whether any on-chain strike/maturity bounds or whitelists should be enforced, or if these are executor-only checks.
+- On-chain bounds: strikes and maturities are enforced off-chain by the executor; no on-chain strike/maturity whitelist is required.
 - Maturity enforcement: whether Derive-defined maturities are enforced on-chain or only by the executor.
 - Origination fee timing: fee is annualized, funded from net option premium, and paid at loan creation after the fee withdrawal is bridged to L1.
 
