@@ -3,7 +3,6 @@ pragma solidity ^0.8.20;
 
 import {IActionVerifier} from "v2-matching/src/interfaces/IActionVerifier.sol";
 import {IRfqModule} from "v2-matching/src/interfaces/IRfqModule.sol";
-import {ITransferModule} from "v2-matching/src/interfaces/ITransferModule.sol";
 import {OptionEncoding} from "lyra-utils/encoding/OptionEncoding.sol";
 
 import {CollarTSA} from "../src/CollarTSA.sol";
@@ -253,75 +252,6 @@ contract CollarTSA_ValidationTests is CollarTSATestUtils {
     vm.prank(signer);
     vm.expectRevert(CollarTSA.CTSA_TradeDataDoesNotMatchOrderHash.selector);
     collarTsa.signActionData(action, abi.encode(trades));
-  }
-
-  function testAllowsActiveToPendingTransferWithCoverage() public {
-    _depositToTSA(10e18);
-    _executeDeposit(10e18);
-    _openCollarPosition(1e18);
-
-    uint pendingSubacc = subAccounts.createAccount(address(tsa), markets[MARKET].pmrm);
-    collarTsa.setPendingSubaccountId(pendingSubacc);
-
-    ITransferModule.Transfers[] memory transfers = new ITransferModule.Transfers[](1);
-    transfers[0] = ITransferModule.Transfers({
-      asset: address(markets[MARKET].base),
-      subId: 0,
-      amount: int(9e18)
-    });
-    ITransferModule.TransferData memory transferData = ITransferModule.TransferData({
-      toAccountId: pendingSubacc,
-      managerForNewAccount: address(0),
-      transfers: transfers
-    });
-
-    IActionVerifier.Action memory action = IActionVerifier.Action({
-      subaccountId: tsaSubacc,
-      nonce: ++tsaNonce,
-      module: transferModule,
-      data: abi.encode(transferData),
-      expiry: block.timestamp + 8 minutes,
-      owner: address(tsa),
-      signer: address(tsa)
-    });
-
-    vm.prank(signer);
-    collarTsa.signActionData(action, "");
-  }
-
-  function testRejectsActiveToPendingTransferInsufficientCoverage() public {
-    _depositToTSA(10e18);
-    _executeDeposit(10e18);
-    _openCollarPosition(1e18);
-
-    uint pendingSubacc = subAccounts.createAccount(address(tsa), markets[MARKET].pmrm);
-    collarTsa.setPendingSubaccountId(pendingSubacc);
-
-    ITransferModule.Transfers[] memory transfers = new ITransferModule.Transfers[](1);
-    transfers[0] = ITransferModule.Transfers({
-      asset: address(markets[MARKET].base),
-      subId: 0,
-      amount: int(9e18 + 1)
-    });
-    ITransferModule.TransferData memory transferData = ITransferModule.TransferData({
-      toAccountId: pendingSubacc,
-      managerForNewAccount: address(0),
-      transfers: transfers
-    });
-
-    IActionVerifier.Action memory action = IActionVerifier.Action({
-      subaccountId: tsaSubacc,
-      nonce: ++tsaNonce,
-      module: transferModule,
-      data: abi.encode(transferData),
-      expiry: block.timestamp + 8 minutes,
-      owner: address(tsa),
-      signer: address(tsa)
-    });
-
-    vm.prank(signer);
-    vm.expectRevert(CollarTSA.CTSA_TransferInsufficientCollateral.selector);
-    collarTsa.signActionData(action, "");
   }
 
   function _openCollarPosition(int amount) internal {

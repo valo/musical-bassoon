@@ -7,7 +7,6 @@ import {Matching} from "v2-matching/src/Matching.sol";
 
 import {DepositModule, IDepositModule} from "v2-matching/src/modules/DepositModule.sol";
 import {WithdrawalModule, IWithdrawalModule} from "v2-matching/src/modules/WithdrawalModule.sol";
-import {TransferModule} from "v2-matching/src/modules/TransferModule.sol";
 import {TradeModule} from "v2-matching/src/modules/TradeModule.sol";
 import {PMRMTestBase} from "v2-core/test/risk-managers/unit-tests/PMRM/utils/PMRMTestBase.sol";
 import {IActionVerifier} from "v2-matching/src/interfaces/IActionVerifier.sol";
@@ -30,7 +29,6 @@ contract MatchingHelpers is Test {
   Matching public matching;
   DepositModule public depositModule;
   WithdrawalModule public withdrawalModule;
-  TransferModule public transferModule;
   TradeModule public tradeModule;
   LiquidateModule public liquidateModule;
   RfqModule public rfqModule;
@@ -42,14 +40,12 @@ contract MatchingHelpers is Test {
     matching = new Matching(subAccounts);
     depositModule = new DepositModule(matching);
     withdrawalModule = new WithdrawalModule(matching);
-    transferModule = new TransferModule(matching);
     tradeModule = new TradeModule(matching, IAsset(cash), feeRecipient);
     liquidateModule = new LiquidateModule(matching, auction);
     rfqModule = new RfqModule(matching, IAsset(cash), feeRecipient);
 
     matching.setAllowedModule(address(depositModule), true);
     matching.setAllowedModule(address(withdrawalModule), true);
-    matching.setAllowedModule(address(transferModule), true);
     matching.setAllowedModule(address(tradeModule), true);
     matching.setAllowedModule(address(liquidateModule), true);
     matching.setAllowedModule(address(rfqModule), true);

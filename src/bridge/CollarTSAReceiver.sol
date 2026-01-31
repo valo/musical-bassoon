@@ -37,6 +37,9 @@ contract CollarTSAReceiver is AccessControl, OApp {
 
   mapping(bytes32 => CollarLZMessages.Message) public pendingMessages;
   mapping(bytes32 => bool) public handledMessages;
+  mapping(uint256 => bool) public returnRequested;
+  mapping(uint256 => bool) public returnCompleted;
+  mapping(uint256 => bool) public tradeConfirmed;
 
   event MessageReceived(bytes32 indexed guid, CollarLZMessages.Action action, uint256 indexed loanId);
   event MessageHandled(bytes32 indexed guid, CollarLZMessages.Action action, uint256 indexed loanId);
@@ -55,6 +58,13 @@ contract CollarTSAReceiver is AccessControl, OApp {
   error CTR_RfqModuleNotSet();
   error CTR_RfqTradeNotConfirmed();
   error CTR_InvalidSubaccount();
+  error CTR_ReturnAlreadyRequested();
+  error CTR_ReturnAlreadyCompleted();
+  error CTR_ReturnNotRequested();
+  error CTR_ReturnRequestAfterTrade();
+  error CTR_CollateralReturnedAfterTrade();
+  error CTR_TradeConfirmedAfterReturn();
+  error CTR_TradeAlreadyConfirmed();
 
   constructor(
     address admin,
@@ -132,12 +142,28 @@ contract CollarTSAReceiver is AccessControl, OApp {
       if (message.recipient == address(0)) {
         revert CTR_InvalidRecipient();
       }
+      if (message.subaccountId != tsa.subAccount()) {
+        revert CTR_InvalidSubaccount();
+      }
       _signDeposit(message);
       _sendAck(message, CollarLZMessages.Action.DepositConfirmed);
     } else if (
       message.action == CollarLZMessages.Action.ReturnRequest || message.action == CollarLZMessages.Action.CancelRequest
     ) {
+      if (message.subaccountId != tsa.subAccount()) {
+        revert CTR_InvalidSubaccount();
+      }
+      if (tradeConfirmed[message.loanId]) {
+        revert CTR_ReturnRequestAfterTrade();
+      }
+      if (returnCompleted[message.loanId]) {
+        revert CTR_ReturnAlreadyCompleted();
+      }
+      if (returnRequested[message.loanId]) {
+        revert CTR_ReturnAlreadyRequested();
+      }
       _signWithdrawal(message, guid);
+      returnRequested[message.loanId] = true;
     }
 
     handledMessages[guid] = true;
@@ -179,9 +205,14 @@ contract CollarTSAReceiver is AccessControl, OApp {
     if (vaultRecipient == address(0)) {
       revert CTR_InvalidRecipient();
     }
-    uint256 pendingSubaccountId = tsa.getPendingSubaccountId();
-    if (pendingSubaccountId == 0) {
-      revert CTR_InvalidSubaccount();
+    if (tradeConfirmed[loanId]) {
+      revert CTR_CollateralReturnedAfterTrade();
+    }
+    if (!returnRequested[loanId]) {
+      revert CTR_ReturnNotRequested();
+    }
+    if (returnCompleted[loanId]) {
+      revert CTR_ReturnAlreadyCompleted();
     }
     CollarLZMessages.Message memory message = CollarLZMessages.Message({
       action: CollarLZMessages.Action.CollateralReturned,
@@ -189,13 +220,14 @@ contract CollarTSAReceiver is AccessControl, OApp {
       asset: asset,
       amount: amount,
       recipient: vaultRecipient,
-      subaccountId: pendingSubaccountId,
+      subaccountId: tsa.subAccount(),
       socketMessageId: socketMessageId,
       secondaryAmount: 0,
       quoteHash: bytes32(0),
       takerNonce: 0
     });
-
+    returnCompleted[loanId] = true;
+    returnRequested[loanId] = false;
     return _send(message, defaultOptions);
   }
 
@@ -214,6 +246,12 @@ contract CollarTSAReceiver is AccessControl, OApp {
   {
     if (vaultRecipient == address(0)) {
       revert CTR_InvalidRecipient();
+    }
+    if (returnCompleted[loanId]) {
+      revert CTR_TradeConfirmedAfterReturn();
+    }
+    if (tradeConfirmed[loanId]) {
+      revert CTR_TradeAlreadyConfirmed();
     }
     (, , , , address rfqModule, ) = tsa.getCollarTSAAddresses();
     if (rfqModule == address(0)) {
@@ -244,7 +282,9 @@ contract CollarTSAReceiver is AccessControl, OApp {
       takerNonce: takerNonce
     });
 
-    return _send(message, defaultOptions);
+    MessagingReceipt memory receipt = _send(message, defaultOptions);
+    tradeConfirmed[loanId] = true;
+    return receipt;
   }
 
   function quoteMessage(CollarLZMessages.Message calldata message, bytes calldata options)

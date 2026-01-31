@@ -26,6 +26,4 @@ interface ICollarTSA {
     view
     returns (address, address, address, address, address, address, address);
   function subAccount() external view returns (uint256);
-  function getTransferModule() external view returns (address);
-  function getPendingSubaccountId() external view returns (uint256);
 }

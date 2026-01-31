@@ -18,7 +18,6 @@ import {IWithdrawalModule} from "v2-matching/src/interfaces/IWithdrawalModule.so
 import {IMatching} from "v2-matching/src/interfaces/IMatching.sol";
 import {ITradeModule} from "v2-matching/src/interfaces/ITradeModule.sol";
 import {IRfqModule} from "v2-matching/src/interfaces/IRfqModule.sol";
-import {ITransferModule} from "v2-matching/src/interfaces/ITransferModule.sol";
 
 import {
   StandardManager, IStandardManager, IVolFeed, IForwardFeed
@@ -40,9 +39,7 @@ contract CollarTSA is CollateralManagementTSA {
     IWithdrawalModule withdrawalModule;
     ITradeModule tradeModule;
     IRfqModule rfqModule;
-    ITransferModule transferModule;
     IOptionAsset optionAsset;
-    uint256 pendingSubaccountId;
   }
 
   struct CollarTSAParams {
@@ -76,12 +73,10 @@ contract CollarTSA is CollateralManagementTSA {
     IWithdrawalModule withdrawalModule;
     ITradeModule tradeModule;
     IRfqModule rfqModule;
-    ITransferModule transferModule;
     IOptionAsset optionAsset;
     ISpotFeed baseFeed;
     CollarTSAParams params;
     CollateralManagementParams collateralManagementParams;
-    uint256 pendingSubaccountId;
     /// @dev Only one hash is considered valid at a time, and it is revoked when a new one comes in.
     bytes32 lastSeenHash;
   }
@@ -113,11 +108,8 @@ contract CollarTSA is CollateralManagementTSA {
     $.withdrawalModule = collarInitParams.withdrawalModule;
     $.tradeModule = collarInitParams.tradeModule;
     $.rfqModule = collarInitParams.rfqModule;
-    $.transferModule = collarInitParams.transferModule;
     $.optionAsset = collarInitParams.optionAsset;
     $.baseFeed = collarInitParams.baseFeed;
-    $.pendingSubaccountId = collarInitParams.pendingSubaccountId;
-
     BaseTSAAddresses memory tsaAddresses = getBaseTSAAddresses();
     tsaAddresses.depositAsset.approve(address($.depositModule), type(uint).max);
   }
@@ -139,22 +131,6 @@ contract CollarTSA is CollateralManagementTSA {
 
     _getCollarTSAStorage().params = newParams;
     emit CollarTSAParamsSet(newParams);
-  }
-
-  function setPendingSubaccountId(uint256 pendingSubaccountId) external onlyOwner {
-    if (pendingSubaccountId == 0) {
-      revert CTSA_InvalidSubaccount();
-    }
-    _getCollarTSAStorage().pendingSubaccountId = pendingSubaccountId;
-    emit PendingSubaccountUpdated(pendingSubaccountId);
-  }
-
-  function setTransferModule(ITransferModule transferModule) external onlyOwner {
-    if (address(transferModule) == address(0)) {
-      revert CTSA_InvalidModule();
-    }
-    _getCollarTSAStorage().transferModule = transferModule;
-    emit TransferModuleUpdated(address(transferModule));
   }
 
   /// @notice Set collateral management parameters.
@@ -206,20 +182,12 @@ contract CollarTSA is CollateralManagementTSA {
     BaseTSAAddresses memory tsaAddresses = getBaseTSAAddresses();
 
     if (address(action.module) == address($.depositModule)) {
-      if (action.subaccountId != $.pendingSubaccountId) {
+      if (action.subaccountId != subAccount()) {
         revert CTSA_InvalidSubaccount();
       }
       _verifyDepositAction(action, tsaAddresses);
     } else if (address(action.module) == address($.withdrawalModule)) {
       _verifyWithdrawAction(action, tsaAddresses);
-    } else if (address(action.module) == address($.transferModule)) {
-      if (action.data.length == 0) {
-        if (action.subaccountId != subAccount()) {
-          revert CTSA_InvalidSubaccount();
-        }
-        return;
-      }
-      _verifyTransferAction(action, tsaAddresses);
     } else if (address(action.module) == address($.tradeModule)) {
       if (action.subaccountId != subAccount()) {
         revert CTSA_InvalidSubaccount();
@@ -248,9 +216,7 @@ contract CollarTSA is CollateralManagementTSA {
       revert CTSA_InvalidAsset();
     }
 
-    CollarTSAStorage storage $ = _getCollarTSAStorage();
-    uint256 activeSubaccount = subAccount();
-    if (action.subaccountId != activeSubaccount && action.subaccountId != $.pendingSubaccountId) {
+    if (action.subaccountId != subAccount()) {
       revert CTSA_InvalidSubaccount();
     }
 
@@ -263,7 +229,8 @@ contract CollarTSA is CollateralManagementTSA {
         revert CTSA_WithdrawingUtilisedCollateral();
       }
 
-      if (cashBalance < _getCollarTSAStorage().params.maxNegCash) {
+      CollarTSAStorage storage $ = _getCollarTSAStorage();
+      if (cashBalance < $.params.maxNegCash) {
         revert CTSA_WithdrawalNegativeCash();
       }
       return;
@@ -292,57 +259,6 @@ contract CollarTSA is CollateralManagementTSA {
       revert CTSA_SpotTradesDisabled();
     }
     revert CTSA_InvalidAsset();
-  }
-
-  function _verifyTransferAction(IMatching.Action memory action, BaseTSAAddresses memory tsaAddresses) internal view {
-    CollarTSAStorage storage $ = _getCollarTSAStorage();
-    if ($.pendingSubaccountId == 0 || address($.transferModule) == address(0)) {
-      revert CTSA_InvalidModule();
-    }
-    bool fromPending = action.subaccountId == $.pendingSubaccountId;
-    bool fromActive = action.subaccountId == subAccount();
-    if (!fromPending && !fromActive) {
-      revert CTSA_InvalidSubaccount();
-    }
-
-    ITransferModule.TransferData memory transferData = abi.decode(action.data, (ITransferModule.TransferData));
-    if (transferData.managerForNewAccount != address(0)) {
-      revert CTSA_InvalidTransferAction();
-    }
-    if (fromPending && transferData.toAccountId != subAccount()) {
-      revert CTSA_InvalidTransferAction();
-    }
-    if (fromActive && transferData.toAccountId != $.pendingSubaccountId) {
-      revert CTSA_InvalidTransferAction();
-    }
-    if (transferData.transfers.length != 1) {
-      revert CTSA_InvalidTransferAction();
-    }
-
-    ITransferModule.Transfers memory transfer = transferData.transfers[0];
-    if (transfer.asset != address(tsaAddresses.wrappedDepositAsset) || transfer.subId != 0) {
-      revert CTSA_InvalidTransferAction();
-    }
-    if (transfer.amount <= 0) {
-      revert CTSA_InvalidTransferAction();
-    }
-
-    uint amount = transfer.amount.toUint256();
-    (uint shortCalls, uint baseBalance, int cashBalance, uint longPuts, uint optionPositions) =
-      _getSubAccountStats(action.subaccountId);
-    if (fromPending) {
-      if (shortCalls > 0 || longPuts > 0 || optionPositions > 0 || amount > baseBalance) {
-        revert CTSA_InvalidTransferAction();
-      }
-      return;
-    }
-
-    if (baseBalance < amount + shortCalls) {
-      revert CTSA_TransferInsufficientCollateral();
-    }
-    if (cashBalance < $.params.maxNegCash) {
-      revert CTSA_WithdrawalNegativeCash();
-    }
   }
 
   /// @dev If extraData is 0, the action is a maker action; otherwise, it is a taker action.
@@ -659,14 +575,6 @@ contract CollarTSA is CollateralManagementTSA {
     return _getCollarTSAStorage().params;
   }
 
-  function getPendingSubaccountId() public view returns (uint256) {
-    return _getCollarTSAStorage().pendingSubaccountId;
-  }
-
-  function getTransferModule() public view returns (address) {
-    return address(_getCollarTSAStorage().transferModule);
-  }
-
   function getCollateralManagementParams() public view returns (CollateralManagementParams memory) {
     return _getCollateralManagementParams();
   }
@@ -689,9 +597,6 @@ contract CollarTSA is CollateralManagementTSA {
   ///////////////////
 
   event CollarTSAParamsSet(CollarTSAParams params);
-  event PendingSubaccountUpdated(uint256 subaccountId);
-  event TransferModuleUpdated(address indexed transferModule);
-
   error CTSA_InvalidParams();
   error CTSA_InvalidActionExpiry();
   error CTSA_InvalidModule();
@@ -712,7 +617,6 @@ contract CollarTSA is CollateralManagementTSA {
   error CTSA_InvalidOptionBalance();
   error CTSA_OptionExpiryOutOfBounds();
   error CTSA_InsufficientCash();
-  error CTSA_TransferInsufficientCollateral();
   error CTSA_InvalidRfqTradeLength();
   error CTSA_InvalidRfqTradeDetails();
   error CTSA_InvalidTradeAmount();
@@ -721,5 +625,4 @@ contract CollarTSA is CollateralManagementTSA {
   error CTSA_SpotRfqAmountInvalid();
   error CTSA_SpotRfqPriceTooLow();
   error CTSA_SpotRfqSellTooMuch();
-  error CTSA_InvalidTransferAction();
 }
