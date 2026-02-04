@@ -12,7 +12,25 @@ You chose:
   - Ethereum mainnet RPC (for L1 fork)
   - Optimism mainnet RPC (for L2 fork)
 
-## 1) Start forks
+## Fast path (recommended): one command
+
+```bash
+export MAINNET_RPC_URL=...
+export OP_RPC_URL=...
+
+# from repo root
+./keeper/scripts/devnet.sh
+```
+
+This will:
+- start both anvils (8545/9545)
+- deploy L1+L2 (with Euler Earn USDC + mocks)
+- write `keeper/.env`
+- run the keeper
+
+## Manual path
+
+### 1) Start forks
 
 In two terminals:
 
@@ -24,7 +42,7 @@ anvil --fork-url "$MAINNET_RPC_URL" --port 8545
 anvil --fork-url "$OP_RPC_URL" --port 9545
 ```
 
-## 2) Deploy
+### 2) Deploy
 
 ### L1 deploy (Vault + LZ Messenger)
 
