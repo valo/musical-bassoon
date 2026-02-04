@@ -30,8 +30,13 @@ const L2_MessageReceived = parseAbiItem(
 async function main() {
   const cfg = loadConfig();
 
-  const l1 = makeClients(cfg.L1_RPC_URL, cfg.L1_KEEPER_PK as Hex);
-  const l2 = makeClients(cfg.L2_RPC_URL, cfg.L2_KEEPER_PK as Hex);
+  const l1 = cfg.L1_KEEPER_PK
+    ? makeClients(cfg.L1_RPC_URL, { privateKey: cfg.L1_KEEPER_PK as Hex })
+    : makeClients(cfg.L1_RPC_URL, { mnemonic: cfg.ANVIL_MNEMONIC, addressIndex: cfg.L1_ACCOUNT_INDEX });
+
+  const l2 = cfg.L2_KEEPER_PK
+    ? makeClients(cfg.L2_RPC_URL, { privateKey: cfg.L2_KEEPER_PK as Hex })
+    : makeClients(cfg.L2_RPC_URL, { mnemonic: cfg.ANVIL_MNEMONIC, addressIndex: cfg.L2_ACCOUNT_INDEX });
 
   const state = newState(cfg.L1_START_BLOCK, cfg.L2_START_BLOCK);
 
