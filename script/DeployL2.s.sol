@@ -4,30 +4,51 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 
 import {CollarTSAReceiver} from "../src/bridge/CollarTSAReceiver.sol";
+import {SocketMessageTrackerMock} from "../src/mocks/SocketMessageTrackerMock.sol";
+import {CollarTSAMock} from "../src/mocks/CollarTSAMock.sol";
+import {LZEndpointV2Mock} from "../src/mocks/LZEndpointV2Mock.sol";
 
 /// @dev Deploy L2 components against a fork (Optimism).
 ///
 /// Required env vars:
 /// - ADMIN (address)
-/// - LZ_ENDPOINT (address)            (LayerZero endpoint on L2)
-/// - SOCKET_TRACKER (address)         (ISocketMessageTracker)
-/// - TSA (address)                    (ICollarTSA)
-/// - L1_EID (uint32)                  (LayerZero destination endpoint id on L1)
 /// - L1_MESSENGER (address)           (for setPeer)
 /// - L1_VAULT (address)               (vaultRecipient)
 /// - OUTPUT_JSON (string)
+///
+/// Optional:
+/// - LZ_ENDPOINT (address)            (if omitted, deploys a placeholder mock endpoint)
+/// - SOCKET_TRACKER (address)         (if omitted, deploys SocketMessageTrackerMock)
+/// - TSA (address)                    (if omitted, deploys CollarTSAMock)
+/// - TSA_SUBACCOUNT (uint256)         (default: 1)
+/// - L1_EID (uint32)                  (default: 0)
 contract DeployL2 is Script {
   function run() external {
     address admin = vm.envAddress("ADMIN");
-    address lzEndpoint = vm.envAddress("LZ_ENDPOINT");
-    address socketTracker = vm.envAddress("SOCKET_TRACKER");
-    address tsa = vm.envAddress("TSA");
-    uint32 l1Eid = uint32(vm.envUint("L1_EID"));
 
     address l1Messenger = vm.envAddress("L1_MESSENGER");
     address l1Vault = vm.envAddress("L1_VAULT");
 
+    address lzEndpoint = vm.envOr("LZ_ENDPOINT", address(0));
+    address socketTracker = vm.envOr("SOCKET_TRACKER", address(0));
+    address tsa = vm.envOr("TSA", address(0));
+
+    uint256 tsaSubaccount = vm.envOr("TSA_SUBACCOUNT", uint256(1));
+    uint32 l1Eid = uint32(vm.envOr("L1_EID", uint256(0)));
+
     vm.startBroadcast();
+
+    if (lzEndpoint == address(0)) {
+      lzEndpoint = address(new LZEndpointV2Mock());
+    }
+
+    if (socketTracker == address(0)) {
+      socketTracker = address(new SocketMessageTrackerMock());
+    }
+
+    if (tsa == address(0)) {
+      tsa = address(new CollarTSAMock(tsaSubaccount));
+    }
 
     CollarTSAReceiver receiver = new CollarTSAReceiver(
       admin,
@@ -47,9 +68,15 @@ contract DeployL2 is Script {
 
     string memory json;
     json = vm.serializeAddress("addrs", "l2Receiver", address(receiver));
+    json = vm.serializeAddress("addrs", "l2SocketTracker", socketTracker);
+    json = vm.serializeAddress("addrs", "l2Tsa", tsa);
+    json = vm.serializeAddress("addrs", "l2LzEndpoint", lzEndpoint);
     vm.writeJson(json, outPath);
 
     console2.log("L2 receiver", address(receiver));
+    console2.log("L2 socketTracker", socketTracker);
+    console2.log("L2 tsa", tsa);
+    console2.log("L2 lzEndpoint", lzEndpoint);
     console2.log("Wrote", outPath);
   }
 }
