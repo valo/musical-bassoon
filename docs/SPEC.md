@@ -107,7 +107,7 @@ Derive provides various strategy contracts (e.g., CCTSA for covered calls, PPTSA
 
 **Quote acceptance (L1)**: After the L2 deposit is confirmed, the borrower calls `acceptQuote(loanId, quote, quoteSig)` on L1. The vault validates the EIP-712 quote signature, verifies the quote parameters match the recorded deposit intent (collateral asset/amount, maturity, put strike, desired borrow amount), and commits principal. The quote struct includes `loanId` to bind the quote to the pending deposit. Once a quote is accepted, the borrower **cannot** request a return until `quoteExpiry` has passed.
 
-**Open collar**: The executor signs an RFQ taker action and submits it to Derive's RFQ API. Derive's keeper then validates and executes the RFQ on-chain:
+**Open collar**: The executor signs and submits an RFQ taker action on Derive:
 
 - Buy a put with strike `K_p` and maturity `t`.
 - Sell a call with strike `K_c` and maturity `t`.
@@ -128,8 +128,6 @@ sequenceDiagram
   participant L2Recv as L2 CollarTSAReceiver
   participant TSA as L2 CollarTSA
   participant Deposit as Derive DepositModule
-  participant DeriveAPI as Derive RFQ API
-  actor DeriveKeeper
   participant Match as Derive Matching/RfqModule
   participant Liquidity as L1 CollarLiquidityVault
   participant Treasury as L1 Treasury
@@ -142,16 +140,12 @@ sequenceDiagram
   L2Recv->>TSA: signActionData(DepositModule)
   TSA->>Deposit: executeAction(vault subaccount)
   L2Recv-->>LZ: send DepositConfirmed
-
   Borrower->>Vault: acceptQuote(loanId, quote, quoteSig)
   Keeper->>TSA: signActionData(RFQ taker)
-  Keeper->>DeriveAPI: submitSignedRFQ(quote, takerAction)
-  DeriveKeeper->>Match: verifyAndMatch(...)
-
+  Keeper->>Match: verifyAndMatch(...)
   Note over Keeper,Socket: Withdraw origination fee (WithdrawalModule + Socket)
   Keeper->>L2Recv: sendTradeConfirmed(loanId, fee, socketMessageId)
   L2Recv-->>LZ: send TradeConfirmed
-
   Keeper->>Vault: finalizeLoan(loanId, depositGuid, tradeGuid)
   Vault->>Treasury: transfer fee cut
   Vault->>Liquidity: transfer fee cut
@@ -202,8 +196,6 @@ sequenceDiagram
   actor Borrower
   actor Keeper
   participant TSA as L2 CollarTSA
-  participant DeriveAPI as Derive RFQ API
-  actor DeriveKeeper
   participant Match as Derive Matching/RfqModule
   participant Withdraw as Derive WithdrawalModule
   participant Socket as Socket Bridge
@@ -214,8 +206,7 @@ sequenceDiagram
   participant Treasury as L1 Treasury
 
   Keeper->>TSA: signActionData(spot RFQ taker)
-  Keeper->>DeriveAPI: submitSignedRFQ(spot taker)
-  DeriveKeeper->>Match: verifyAndMatch(spot RFQ)
+  Keeper->>Match: verifyAndMatch(spot RFQ)
   Keeper->>TSA: signActionData(WithdrawalModule USDC)
   Keeper->>Socket: bridge USDC to L1
   Keeper->>L2Recv: sendSettlementReport(loanId, usdcAmount, socketMessageId)
@@ -273,8 +264,6 @@ sequenceDiagram
   actor Borrower
   actor Keeper
   participant TSA as L2 CollarTSA
-  participant DeriveAPI as Derive RFQ API
-  actor DeriveKeeper
   participant Match as Derive Matching/RfqModule
   participant Withdraw as Derive WithdrawalModule
   participant Socket as Socket Bridge
@@ -284,8 +273,7 @@ sequenceDiagram
   participant Liquidity as L1 CollarLiquidityVault
 
   Keeper->>TSA: signActionData(spot RFQ taker)
-  Keeper->>DeriveAPI: submitSignedRFQ(spot taker)
-  DeriveKeeper->>Match: verifyAndMatch(spot RFQ)
+  Keeper->>Match: verifyAndMatch(spot RFQ)
   Note over Keeper,TSA: Net negative cash via collateral sale
   Keeper->>TSA: signActionData(WithdrawalModule net USDC)
   Keeper->>Socket: bridge net USDC to L1
