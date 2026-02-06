@@ -297,9 +297,7 @@ contract CollarTSAReceiver is AccessControl, OApp {
         IERC20(message.asset).safeTransfer(address(tsa), message.amount);
 
         IDepositModule.DepositData memory depositData = IDepositModule.DepositData({
-            amount: message.amount,
-            asset: wrappedDepositAsset,
-            managerForNewAccount: address(0)
+            amount: message.amount, asset: wrappedDepositAsset, managerForNewAccount: address(0)
         });
 
         IActionVerifier.Action memory action = IActionVerifier.Action({

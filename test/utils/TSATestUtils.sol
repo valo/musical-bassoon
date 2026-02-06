@@ -222,17 +222,15 @@ contract TSATestUtils is IntegrationTestBase, MatchingHelpers {
         uint256 takerFee,
         uint256 makerFee
     ) internal pure returns (bytes memory) {
-        ITradeModule.FillDetails memory fillDetails =
-            ITradeModule.FillDetails({filledAccount: makerAcc, amountFilled: amountFilled, price: price, fee: makerFee});
+        ITradeModule.FillDetails memory fillDetails = ITradeModule.FillDetails({
+            filledAccount: makerAcc, amountFilled: amountFilled, price: price, fee: makerFee
+        });
 
         ITradeModule.FillDetails[] memory fills = new ITradeModule.FillDetails[](1);
         fills[0] = fillDetails;
 
         ITradeModule.OrderData memory orderData = ITradeModule.OrderData({
-            takerAccount: takerAccount,
-            takerFee: takerFee,
-            fillDetails: fills,
-            managerData: bytes("")
+            takerAccount: takerAccount, takerFee: takerFee, fillDetails: fills, managerData: bytes("")
         });
 
         bytes memory encodedAction = abi.encode(orderData);
@@ -623,11 +621,7 @@ contract TSATestUtils is IntegrationTestBase, MatchingHelpers {
         tsa.signActionData(actions[1], abi.encode(order.trades));
 
         IRfqModule.FillData memory fill = IRfqModule.FillData({
-            makerAccount: nonVaultSubacc,
-            takerAccount: tsaSubacc,
-            makerFee: 0,
-            takerFee: 0,
-            managerData: bytes("")
+            makerAccount: nonVaultSubacc, takerAccount: tsaSubacc, makerFee: 0, takerFee: 0, managerData: bytes("")
         });
 
         _verifyAndMatch(actions, signatures, abi.encode(fill));
@@ -671,11 +665,7 @@ contract TSATestUtils is IntegrationTestBase, MatchingHelpers {
         tsa.signActionData(actions[0], "");
 
         IRfqModule.FillData memory fill = IRfqModule.FillData({
-            makerAccount: tsaSubacc,
-            takerAccount: nonVaultSubacc,
-            makerFee: 0,
-            takerFee: 0,
-            managerData: bytes("")
+            makerAccount: tsaSubacc, takerAccount: nonVaultSubacc, makerFee: 0, takerFee: 0, managerData: bytes("")
         });
 
         _verifyAndMatch(actions, signatures, abi.encode(fill));

@@ -19,9 +19,7 @@ import {IMatching} from "v2-matching/src/interfaces/IMatching.sol";
 import {ITradeModule} from "v2-matching/src/interfaces/ITradeModule.sol";
 import {IRfqModule} from "v2-matching/src/interfaces/IRfqModule.sol";
 
-import {
-    StandardManager, IStandardManager, IVolFeed, IForwardFeed
-} from "v2-core/src/risk-managers/StandardManager.sol";
+import {StandardManager, IStandardManager, IVolFeed, IForwardFeed} from "v2-core/src/risk-managers/StandardManager.sol";
 import {CollateralManagementTSA} from "v2-matching/src/tokenizedSubaccounts/CollateralManagementTSA.sol";
 
 /// @title CollarTSA
@@ -142,9 +140,11 @@ contract CollarTSA is CollateralManagementTSA {
     {
         if (
             newCollateralMgmtParams.worstSpotBuyPrice < 1e18 || newCollateralMgmtParams.worstSpotBuyPrice > 1.2e18
-                || newCollateralMgmtParams.worstSpotSellPrice > 1e18 || newCollateralMgmtParams.worstSpotSellPrice < 0.8e18
+                || newCollateralMgmtParams.worstSpotSellPrice > 1e18
+                || newCollateralMgmtParams.worstSpotSellPrice < 0.8e18
                 || newCollateralMgmtParams.spotTransactionLeniency < 1e18
-                || newCollateralMgmtParams.spotTransactionLeniency > 1.2e18 || newCollateralMgmtParams.feeFactor > 0.05e18
+                || newCollateralMgmtParams.spotTransactionLeniency > 1.2e18
+                || newCollateralMgmtParams.feeFactor > 0.05e18
         ) {
             revert CTSA_InvalidParams();
         }
@@ -208,10 +208,7 @@ contract CollarTSA is CollateralManagementTSA {
     // Withdrawals //
     /////////////////
 
-    function _verifyWithdrawAction(IMatching.Action memory action, BaseTSAAddresses memory tsaAddresses)
-        internal
-        view
-    {
+    function _verifyWithdrawAction(IMatching.Action memory action, BaseTSAAddresses memory tsaAddresses) internal view {
         IWithdrawalModule.WithdrawalData memory withdrawalData =
             abi.decode(action.data, (IWithdrawalModule.WithdrawalData));
 

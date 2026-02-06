@@ -29,12 +29,12 @@ contract CollarTSATestUtils is TSATestUtils {
     });
 
     CollateralManagementTSA.CollateralManagementParams public defaultCollateralManagementParams =
-    CollateralManagementTSA.CollateralManagementParams({
-        feeFactor: 0.01e18,
-        spotTransactionLeniency: 1.01e18,
-        worstSpotBuyPrice: 1.01e18,
-        worstSpotSellPrice: 0.99e18
-    });
+        CollateralManagementTSA.CollateralManagementParams({
+            feeFactor: 0.01e18,
+            spotTransactionLeniency: 1.01e18,
+            worstSpotBuyPrice: 1.01e18,
+            worstSpotSellPrice: 0.99e18
+        });
 
     function upgradeToCollarTSA(string memory market) internal {
         IWrappedERC20Asset wrappedDepositAsset;

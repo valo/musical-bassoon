@@ -890,11 +890,7 @@ contract MockLZMessenger {
         return MessagingFee({nativeFee: quoteFee, lzTokenFee: 0});
     }
 
-    function sendMessage(CollarLZMessages.Message calldata message)
-        external
-        payable
-        returns (MessagingReceipt memory)
-    {
+    function sendMessage(CollarLZMessages.Message calldata message) external payable returns (MessagingReceipt memory) {
         nonce++;
         bytes32 guid = keccak256(abi.encodePacked(nonce, message.loanId, message.action));
         lastSentMessage = message;

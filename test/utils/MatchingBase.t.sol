@@ -78,8 +78,9 @@ contract MatchingHelpers is Test {
         pure
         returns (bytes memory)
     {
-        IDepositModule.DepositData memory data =
-            IDepositModule.DepositData({amount: amount, asset: asset, managerForNewAccount: newManager});
+        IDepositModule.DepositData memory data = IDepositModule.DepositData({
+            amount: amount, asset: asset, managerForNewAccount: newManager
+        });
 
         return abi.encode(data);
     }

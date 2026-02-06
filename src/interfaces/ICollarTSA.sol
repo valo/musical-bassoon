@@ -18,9 +18,6 @@ interface ICollarTSA {
     function signActionData(IActionVerifier.Action memory action, bytes memory extraData) external;
     function getCollarTSAParams() external view returns (CollarTSAParams memory);
     function getCollarTSAAddresses() external view returns (address, address, address, address, address, address);
-    function getBaseTSAAddresses()
-        external
-        view
-        returns (address, address, address, address, address, address, address);
+    function getBaseTSAAddresses() external view returns (address, address, address, address, address, address, address);
     function subAccount() external view returns (uint256);
 }

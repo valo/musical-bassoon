@@ -304,11 +304,7 @@ contract CollarTSA_ValidationTests is CollarTSATestUtils {
         tsa.signActionData(actions[1], abi.encode(trades));
 
         IRfqModule.FillData memory fill = IRfqModule.FillData({
-            makerAccount: nonVaultSubacc,
-            takerAccount: tsaSubacc,
-            makerFee: 0,
-            takerFee: 0,
-            managerData: bytes("")
+            makerAccount: nonVaultSubacc, takerAccount: tsaSubacc, makerFee: 0, takerFee: 0, managerData: bytes("")
         });
 
         _verifyAndMatch(actions, signatures, abi.encode(fill));
@@ -319,8 +315,9 @@ contract CollarTSA_ValidationTests is CollarTSATestUtils {
         _executeDeposit(2e18);
 
         IRfqModule.TradeData[] memory trades = new IRfqModule.TradeData[](1);
-        trades[0] =
-            IRfqModule.TradeData({asset: address(markets[MARKET].base), subId: 0, price: MARKET_REF_SPOT, amount: 1e18});
+        trades[0] = IRfqModule.TradeData({
+            asset: address(markets[MARKET].base), subId: 0, price: MARKET_REF_SPOT, amount: 1e18
+        });
 
         IRfqModule.TakerOrder memory order =
             IRfqModule.TakerOrder({orderHash: keccak256(abi.encode(trades)), maxFee: 0});
@@ -344,8 +341,9 @@ contract CollarTSA_ValidationTests is CollarTSATestUtils {
         _executeDeposit(2e18);
 
         IRfqModule.TradeData[] memory trades = new IRfqModule.TradeData[](1);
-        trades[0] =
-            IRfqModule.TradeData({asset: address(markets[MARKET].base), subId: 0, price: MARKET_REF_SPOT, amount: 1e18});
+        trades[0] = IRfqModule.TradeData({
+            asset: address(markets[MARKET].base), subId: 0, price: MARKET_REF_SPOT, amount: 1e18
+        });
 
         IRfqModule.RfqOrder memory order = IRfqModule.RfqOrder({maxFee: 0, trades: trades});
 

@@ -646,11 +646,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
             revert CV_ZeroAddress();
         }
         socketBridgeConfigs[asset] = SocketBridgeConfig({
-            bridge: bridge,
-            connector: connector,
-            msgGasLimit: msgGasLimit,
-            options: options,
-            extraData: extraData
+            bridge: bridge, connector: connector, msgGasLimit: msgGasLimit, options: options, extraData: extraData
         });
         emit BridgeConfigUpdated(asset, address(bridge), address(connector), msgGasLimit, options, extraData);
     }
