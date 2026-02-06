@@ -26,6 +26,9 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockEulerAdapter} from "./mocks/MockEulerAdapter.sol";
 
 contract CollarVaultTest is Test {
+    uint256 internal rfqSignerKey = 0xA11CE;
+    address internal rfqSigner;
+
     MockERC20 internal usdc;
     MockERC20 internal wbtc;
     CollarLiquidityVault internal liquidityVault;
@@ -52,6 +55,7 @@ contract CollarVaultTest is Test {
         eulerAdapter = new MockEulerAdapter();
         messenger = new MockLZMessenger();
         borrower = vm.addr(borrowerKey);
+        rfqSigner = vm.addr(rfqSignerKey);
 
         address permit2Address = new DeployPermit2().deployPermit2();
         permit2 = IAllowanceTransfer(permit2Address);
@@ -75,6 +79,7 @@ contract CollarVaultTest is Test {
         );
         vault.grantRole(vault.KEEPER_ROLE(), keeper);
         vault.setDeriveSubaccountId(1);
+        vault.setRfqSigner(rfqSigner, true);
 
         // fund liquidity
         usdc.mint(address(this), 1_000_000e6);
@@ -99,8 +104,25 @@ contract CollarVaultTest is Test {
 
         uint256 loanId = _requestDeposit(params);
 
+        CollarVault.BaselineRfq memory rfq = CollarVault.BaselineRfq({
+            loanId: loanId,
+            collateralAsset: address(wbtc),
+            collateralAmount: params.collateralAmount,
+            maturity: uint64(params.maturity),
+            putStrike: params.putStrike,
+            callStrike: 25_000e6,
+            borrowAmount: params.borrowAmount,
+            rfqExpiry: uint64(block.timestamp + 1 days),
+            borrower: borrower,
+            nonce: 1
+        });
+
+        bytes32 rfqHash = vault.hashBaselineRfq(rfq);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(rfqSignerKey, rfqHash);
+        bytes memory rfqSig = abi.encodePacked(r, s, v);
+
         vm.prank(borrower);
-        vault.acceptMandate{value: 0}(loanId, 25_000e6, uint64(block.timestamp + 1 days));
+        vault.acceptMandate{value: 0}(loanId, rfq, rfqSig, uint64(block.timestamp + 1 days));
 
         bytes32 depositGuid = bytes32(uint256(1));
         bytes32 tradeGuid = bytes32(uint256(2));
@@ -122,6 +144,8 @@ contract CollarVaultTest is Test {
             })
         );
 
+        bytes memory tradeData = abi.encode(uint256(25_000e6), uint256(20_000e6), uint64(params.maturity));
+
         messenger.setMessage(
             tradeGuid,
             CollarLZMessages.Message({
@@ -135,7 +159,7 @@ contract CollarVaultTest is Test {
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
                 takerNonce: 1,
-                data: abi.encode(uint256(25_000e6), uint256(20_000e6), uint64(params.maturity))
+                data: tradeData
             })
         );
 

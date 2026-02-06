@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -34,7 +35,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
     bytes32 public constant PARAMETER_ROLE = keccak256("PARAMETER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    // (removed) QUOTE_SIGNER_ROLE
+    bytes32 public constant RFQ_SIGNER_ROLE = keccak256("RFQ_SIGNER_ROLE");
     uint256 public constant YEAR = 365 days;
     uint256 public constant MAX_BPS = 10_000;
 
@@ -83,7 +84,24 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
         uint256 borrowAmount;
     }
 
-    // Quote-based RFQ flow has been removed; loans are now created via acceptMandate + L2 TradeConfirmed.
+    // Quote-based RFQ flow has been removed; loans are now created via keeper-signed RFQ baseline + mandate + L2 TradeConfirmed.
+
+    struct BaselineRfq {
+        uint256 loanId;
+        address collateralAsset;
+        uint256 collateralAmount;
+        uint64 maturity;
+        uint256 putStrike;
+        uint256 callStrike;
+        uint256 borrowAmount;
+        uint64 rfqExpiry;
+        address borrower;
+        uint256 nonce;
+    }
+
+    bytes32 public constant BASELINE_RFQ_TYPEHASH = keccak256(
+        "BaselineRfq(uint256 loanId,address collateralAsset,uint256 collateralAmount,uint64 maturity,uint256 putStrike,uint256 callStrike,uint256 borrowAmount,uint64 rfqExpiry,address borrower,uint256 nonce)"
+    );
 
     ILiquidityVault public liquidityVault;
     IERC20 public immutable usdc;
@@ -124,6 +142,8 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     }
 
     mapping(uint256 => Mandate) public mandates;
+
+    mapping(bytes32 => bool) public usedBaselineRfqs;
 
     mapping(uint256 => bool) public tradeConfirmed;
     mapping(uint256 => bool) public collateralActivated;
@@ -201,7 +221,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     event L2RecipientUpdated(address indexed recipient);
     event EulerAdapterUpdated(address indexed adapter);
     event SubaccountUpdated(uint256 subaccountId);
-    // (removed) QuoteSignerUpdated
+    event RfqSignerUpdated(address indexed signer, bool allowed);
     event LZMessengerUpdated(address indexed messenger);
     event CollateralDepositRequested(
         uint256 indexed loanId,
@@ -293,11 +313,31 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
         (loanId, socketMessageId, lzGuid) = _requestCollateralDeposit(msg.sender, params);
     }
 
-    // (removed) acceptQuote: quote-based RFQ flow replaced by acceptMandate.
+    // (removed) acceptQuote: quote-based RFQ flow replaced by keeper-signed RFQ baseline + acceptMandate.
 
-    /// @notice Accept an on-chain mandate (constraints) for the keeper to satisfy on L2.
+    function hashBaselineRfq(BaselineRfq memory rfq) public view returns (bytes32) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                BASELINE_RFQ_TYPEHASH,
+                rfq.loanId,
+                rfq.collateralAsset,
+                rfq.collateralAmount,
+                rfq.maturity,
+                rfq.putStrike,
+                rfq.callStrike,
+                rfq.borrowAmount,
+                rfq.rfqExpiry,
+                rfq.borrower,
+                rfq.nonce
+            )
+        );
+        return _hashTypedDataV4(structHash);
+    }
+
+    /// @notice Accept a mandate on L1, constrained by a keeper-signed RFQ baseline.
     /// @dev Mandates must be mirrored L1->L2 via LayerZero since the TSA lives on a different network.
-    function acceptMandate(uint256 loanId, uint256 minCallStrike, uint64 deadline)
+    /// @param deadline Timestamp after which the borrower can request collateral return.
+    function acceptMandate(uint256 loanId, BaselineRfq calldata rfq, bytes calldata rfqSig, uint64 deadline)
         external
         payable
         nonReentrant
@@ -320,21 +360,55 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
         if (deadline <= block.timestamp) {
             revert CV_MandateExpired();
         }
-        if (mandates[loanId].borrower != address(0)) {
+
+        // Only allow replacing an expired mandate.
+        Mandate memory existing = mandates[loanId];
+        bool hadMandate = existing.borrower != address(0);
+        if (hadMandate && block.timestamp < existing.deadline) {
             revert CV_MandateAlreadySet();
         }
 
-        // Reserve liquidity once the mandate is accepted.
-        _commitPrincipal(pending.borrowAmount);
-        if (pending.maturity > type(uint64).max) {
-            revert CV_InvalidMaturity();
+        // Validate keeper-signed baseline RFQ.
+        if (rfq.loanId != loanId) {
+            revert CV_LZMessageMismatch();
         }
-        if (minCallStrike == 0) {
+        if (rfq.borrower != address(0) && rfq.borrower != msg.sender) {
+            revert CV_NotAuthorized();
+        }
+        if (rfq.rfqExpiry < block.timestamp) {
+            revert CV_MandateExpired();
+        }
+        if (
+            rfq.collateralAsset != pending.collateralAsset || rfq.collateralAmount != pending.collateralAmount
+                || rfq.maturity != uint64(pending.maturity) || rfq.putStrike != pending.putStrike
+                || rfq.borrowAmount != pending.borrowAmount
+        ) {
+            revert CV_LZMessageMismatch();
+        }
+        if (rfq.callStrike == 0) {
             revert CV_InvalidAmount();
         }
 
-        // In the new flow, putStrike is the maxPutStrike.
-        uint256 maxPutStrike = pending.putStrike;
+        bytes32 rfqHash = hashBaselineRfq(rfq);
+        if (usedBaselineRfqs[rfqHash]) {
+            revert CV_LZMessageMismatch();
+        }
+        address signer = ECDSA.recover(rfqHash, rfqSig);
+        if (!hasRole(RFQ_SIGNER_ROLE, signer)) {
+            revert CV_NotAuthorized();
+        }
+        usedBaselineRfqs[rfqHash] = true;
+
+        // Reserve liquidity once per loanId. Renewing an expired mandate does not re-commit.
+        if (!hadMandate) {
+            _commitPrincipal(pending.borrowAmount);
+        }
+        if (pending.maturity > type(uint64).max) {
+            revert CV_InvalidMaturity();
+        }
+
+        uint256 minCallStrike = rfq.callStrike;
+        uint256 maxPutStrike = rfq.putStrike;
 
         mandates[loanId] = Mandate({
             borrower: pending.borrower,
@@ -348,8 +422,30 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
             sentToL2: true
         });
 
-        bytes memory mandateData =
-            abi.encode(pending.borrower, minCallStrike, maxPutStrike, uint64(pending.maturity), deadline);
+        lzGuid = _sendMandateCreated(loanId, pending, minCallStrike, maxPutStrike, deadline);
+
+        emit MandateAccepted(
+            loanId,
+            pending.borrower,
+            uint64(pending.maturity),
+            pending.borrowAmount,
+            minCallStrike,
+            maxPutStrike,
+            deadline,
+            lzGuid
+        );
+    }
+
+    function _sendMandateCreated(
+        uint256 loanId,
+        PendingDeposit memory pending,
+        uint256 minCallStrike,
+        uint256 maxPutStrike,
+        uint64 deadline
+    ) internal returns (bytes32 lzGuid) {
+        bytes memory mandateData = abi.encode(
+            pending.borrower, minCallStrike, maxPutStrike, uint64(pending.maturity), deadline
+        );
 
         CollarLZMessages.Message memory message = CollarLZMessages.Message({
             action: CollarLZMessages.Action.MandateCreated,
@@ -380,17 +476,6 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
                 revert CV_RefundFailed();
             }
         }
-
-        emit MandateAccepted(
-            loanId,
-            pending.borrower,
-            uint64(pending.maturity),
-            pending.borrowAmount,
-            minCallStrike,
-            maxPutStrike,
-            deadline,
-            lzGuid
-        );
     }
 
     /// @notice Finalize a loan once deposit and RFQ trades have been confirmed on L2.
@@ -856,7 +941,18 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
         emit MaxTotalPrincipalUpdated(maxPrincipal);
     }
 
-    // (removed) setQuoteSigner: quote-based flow removed.
+    /// @notice Allow or revoke an RFQ signer.
+    function setRfqSigner(address signer, bool allowed) external onlyRole(PARAMETER_ROLE) {
+        if (signer == address(0)) {
+            revert CV_ZeroAddress();
+        }
+        if (allowed) {
+            _grantRole(RFQ_SIGNER_ROLE, signer);
+        } else {
+            _revokeRole(RFQ_SIGNER_ROLE, signer);
+        }
+        emit RfqSignerUpdated(signer, allowed);
+    }
 
     /// @notice Update the LayerZero messenger used to validate L2 acknowledgements.
     function setLZMessenger(ICollarVaultMessenger messenger) external onlyRole(PARAMETER_ROLE) {
