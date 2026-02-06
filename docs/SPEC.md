@@ -107,6 +107,12 @@ Derive provides various strategy contracts (e.g., CCTSA for covered calls, PPTSA
 
 **Mandate acceptance (L1)**: After the L2 deposit is confirmed, the borrower calls `acceptMandate(loanId, rfq, rfqSig, deadline)` on L1. Here `rfq` is a keeper-signed baseline quote (EIP-712) that binds the deposit terms and provides a baseline `(callStrike, putStrike)`; the vault derives `minCallStrike = rfq.callStrike` and `maxPutStrike = rfq.putStrike`, commits principal, and sends a `MandateCreated` LayerZero message to L2. Once a mandate is accepted, the borrower **cannot** request a return until `deadline` has passed.
 
+**Griefing vector (cap lockup) and mitigation**: Without an oracle-backed strike sanity check, a borrower could attempt to set an absurdly high `putStrike` (and thus an absurdly high `borrowAmount`, since `borrowAmount = collateralAmount * putStrike / scale`) and then accept a mandate to commit principal and lock the pool cap. This is mitigated by requiring a keeper-signed baseline RFQ at mandate acceptance time:
+
+- The baseline RFQ is EIP-712 signed by an address in `RFQ_SIGNER_ROLE` and must match the pending deposit terms (`collateralAsset`, `collateralAmount`, `maturity`, `putStrike`, `borrowAmount`, `loanId`).
+- The baseline RFQ has an explicit `rfqExpiry` and can be made one-time-use via a nonce.
+- The borrower can only commit principal by accepting a keeper-signed baseline RFQ, so they cannot unilaterally invent pathological strike/borrow combinations.
+
 **Open collar**: The executor signs and submits an RFQ taker action on Derive:
 
 - Buy a put with strike `K_p` and maturity `t`.
