@@ -163,8 +163,7 @@ contract LZMessagingTest is Test {
         loanStore = new CollarLoanStore(address(this));
 
         messenger = new CollarVaultMessenger(address(this), address(this), address(endpointL1), L2_EID);
-        receiver = new CollarTSAReceiver(address(this), address(endpointL2), socket, tsa, L1_EID);
-        receiver.setLoanStore(loanStore);
+        receiver = new CollarTSAReceiver(address(this), address(endpointL2), socket, tsa, loanStore, L1_EID);
         loanStore.grantRole(loanStore.WRITER_ROLE(), address(receiver));
 
         vaultRecipient = address(0xCAFE);

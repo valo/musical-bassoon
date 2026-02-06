@@ -40,6 +40,7 @@ contract CollarTSA is CollateralManagementTSA {
         ITradeModule tradeModule;
         IRfqModule rfqModule;
         IOptionAsset optionAsset;
+        address loanStore;
     }
 
     struct CollarTSAParams {
@@ -103,7 +104,7 @@ contract CollarTSA is CollateralManagementTSA {
         address initialOwner,
         BaseTSA.BaseTSAInitParams memory initParams,
         CollarTSAInitParams memory collarInitParams
-    ) external reinitializer(5) {
+    ) external reinitializer(6) {
         __BaseTSA_init(initialOwner, initParams);
 
         CollarTSAStorage storage $ = _getCollarTSAStorage();
@@ -114,6 +115,12 @@ contract CollarTSA is CollateralManagementTSA {
         $.rfqModule = collarInitParams.rfqModule;
         $.optionAsset = collarInitParams.optionAsset;
         $.baseFeed = collarInitParams.baseFeed;
+
+        if (collarInitParams.loanStore == address(0)) {
+            revert CTSA_InvalidParams();
+        }
+        $.loanStore = collarInitParams.loanStore;
+
         BaseTSAAddresses memory tsaAddresses = getBaseTSAAddresses();
         tsaAddresses.depositAsset.approve(address($.depositModule), type(uint256).max);
     }
@@ -156,10 +163,6 @@ contract CollarTSA is CollateralManagementTSA {
         _getCollarTSAStorage().collateralManagementParams = newCollateralMgmtParams;
 
         emit CMTSAParamsSet(newCollateralMgmtParams);
-    }
-
-    function setLoanStore(address store) external onlyOwner {
-        _getCollarTSAStorage().loanStore = store;
     }
 
     function loanStore() public view returns (address) {
@@ -328,12 +331,11 @@ contract CollarTSA is CollateralManagementTSA {
         }
 
         // Enforce borrower mandate constraints.
-        address store = $.loanStore;
-        if (store == address(0) || loanId == 0) {
+        if (loanId == 0) {
             revert CTSA_InvalidRfqTradeDetails();
         }
 
-        ICollarLoanStore.Loan memory loan = ICollarLoanStore(store).getLoan(loanId);
+        ICollarLoanStore.Loan memory loan = ICollarLoanStore($.loanStore).getLoan(loanId);
 
         if (loan.borrower == address(0) || loan.consumed) {
             revert CTSA_InvalidRfqTradeDetails();
@@ -356,9 +358,6 @@ contract CollarTSA is CollateralManagementTSA {
         }
 
         // borrowAmount is not directly observable in RFQ leg data; it is enforced on L1 when finalizing the loan.
-        loan.borrowAmount;
-        loan.collateralAsset;
-        loan.collateralAmount;
 
         int256 callAmount = isTaker ? -callLeg.trade.amount : callLeg.trade.amount;
         int256 putAmount = isTaker ? -putLeg.trade.amount : putLeg.trade.amount;

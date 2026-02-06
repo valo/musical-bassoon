@@ -56,7 +56,6 @@ contract CollarTSAReceiver is AccessControl, OApp {
     event OptionsUpdated(bytes options);
     event SocketUpdated(address indexed socket);
     event TSAUpdated(address indexed tsa);
-    event LoanStoreUpdated(address indexed store);
     event VaultRecipientUpdated(address indexed recipient);
 
     error CTR_InvalidPeer();
@@ -75,16 +74,25 @@ contract CollarTSAReceiver is AccessControl, OApp {
     error CTR_TradeConfirmedAfterReturn();
     error CTR_TradeAlreadyConfirmed();
 
-    constructor(address admin, address endpoint_, ISocketMessageTracker socket_, ICollarTSA tsa_, uint32 remoteEid_)
-        OApp(endpoint_, admin)
-        Ownable(admin)
-    {
+    constructor(
+        address admin,
+        address endpoint_,
+        ISocketMessageTracker socket_,
+        ICollarTSA tsa_,
+        ICollarLoanStore loanStore_,
+        uint32 remoteEid_
+    ) OApp(endpoint_, admin) Ownable(admin) {
+        if (address(loanStore_) == address(0)) {
+            revert CTR_InvalidPeer();
+        }
+
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(PARAMETER_ROLE, admin);
         _grantRole(KEEPER_ROLE, admin);
 
         socket = socket_;
         tsa = tsa_;
+        loanStore = loanStore_;
         remoteEid = remoteEid_;
     }
 
@@ -106,11 +114,6 @@ contract CollarTSAReceiver is AccessControl, OApp {
     function setTSA(ICollarTSA newTsa) external onlyRole(PARAMETER_ROLE) {
         tsa = newTsa;
         emit TSAUpdated(address(newTsa));
-    }
-
-    function setLoanStore(ICollarLoanStore store) external onlyRole(PARAMETER_ROLE) {
-        loanStore = store;
-        emit LoanStoreUpdated(address(store));
     }
 
     function setVaultRecipient(address recipient) external onlyRole(PARAMETER_ROLE) {
@@ -150,19 +153,9 @@ contract CollarTSAReceiver is AccessControl, OApp {
             (address borrower, uint256 minCallStrike, uint256 maxPutStrike, uint64 maturity, uint64 deadline) =
                 abi.decode(message.data, (address, uint256, uint256, uint64, uint64));
 
-            ICollarLoanStore store = loanStore;
-            if (address(store) != address(0)) {
-                store.recordMandate(
-                    message.loanId,
-                    borrower,
-                    message.asset,
-                    message.amount,
-                    minCallStrike,
-                    maxPutStrike,
-                    maturity,
-                    deadline
-                );
-            }
+            loanStore.recordMandate(
+                message.loanId, borrower, message.asset, message.amount, minCallStrike, maxPutStrike, maturity, deadline
+            );
 
             handledMessages[guid] = true;
             emit MessageHandled(guid, message.action, message.loanId);
@@ -177,10 +170,7 @@ contract CollarTSAReceiver is AccessControl, OApp {
                 revert CTR_InvalidSubaccount();
             }
 
-            ICollarLoanStore store = loanStore;
-            if (address(store) != address(0)) {
-                store.recordCollateral(message.loanId, message.asset, message.amount);
-            }
+            loanStore.recordCollateral(message.loanId, message.asset, message.amount);
 
             _signDeposit(message);
             _sendAck(message, CollarLZMessages.Action.DepositConfirmed);
@@ -320,10 +310,7 @@ contract CollarTSAReceiver is AccessControl, OApp {
 
         MessagingReceipt memory receipt = _send(message, defaultOptions);
 
-        ICollarLoanStore store = loanStore;
-        if (address(store) != address(0)) {
-            store.markConsumed(loanId);
-        }
+        loanStore.markConsumed(loanId);
 
         tradeConfirmed[loanId] = true;
         return receipt;

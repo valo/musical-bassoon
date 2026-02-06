@@ -55,6 +55,8 @@ contract CollarTSATestUtils is TSATestUtils {
 
         tsaImplementation = new CollarTSA();
 
+        loanStore = new CollarLoanStore(address(this));
+
         proxyAdmin.upgradeAndCall(
             ITransparentUpgradeableProxy(address(proxy)),
             address(tsaImplementation),
@@ -77,7 +79,8 @@ contract CollarTSATestUtils is TSATestUtils {
                     withdrawalModule: withdrawalModule,
                     tradeModule: tradeModule,
                     rfqModule: rfqModule,
-                    optionAsset: optionAsset
+                    optionAsset: optionAsset,
+                    loanStore: address(loanStore)
                 })
             )
         );
@@ -102,8 +105,7 @@ contract CollarTSATestUtils is TSATestUtils {
         CollarTSA(address(tsa)).setCollarTSAParams(defaultCollarParams);
         CollarTSA(address(tsa)).setCollateralManagementParams(defaultCollateralManagementParams);
 
-        loanStore = new CollarLoanStore(address(this));
-        CollarTSA(address(tsa)).setLoanStore(address(loanStore));
+        // loanStore is now required in initialize()
 
         tsa.setShareKeeper(address(this), true);
 
