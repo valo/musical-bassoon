@@ -7,39 +7,39 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IEulerAdapter} from "../../src/interfaces/IEulerAdapter.sol";
 
 contract MockEulerAdapter is IEulerAdapter {
-  using SafeERC20 for IERC20;
+    using SafeERC20 for IERC20;
 
-  mapping(address => mapping(address => uint256)) public collateralBalances;
-  mapping(address => uint256) public debts;
+    mapping(address => mapping(address => uint256)) public collateralBalances;
+    mapping(address => uint256) public debts;
 
-  error MEA_InsufficientCollateral();
-  error MEA_RepayTooMuch();
+    error MEA_InsufficientCollateral();
+    error MEA_RepayTooMuch();
 
-  function depositCollateral(address asset, uint256 amount, address onBehalfOf) external override {
-    IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
-    collateralBalances[onBehalfOf][asset] += amount;
-  }
-
-  function withdrawCollateral(address asset, uint256 amount, address onBehalfOf, address to) external override {
-    uint256 balance = collateralBalances[onBehalfOf][asset];
-    if (amount > balance) {
-      revert MEA_InsufficientCollateral();
+    function depositCollateral(address asset, uint256 amount, address onBehalfOf) external override {
+        IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+        collateralBalances[onBehalfOf][asset] += amount;
     }
-    collateralBalances[onBehalfOf][asset] = balance - amount;
-    IERC20(asset).safeTransfer(to, amount);
-  }
 
-  function borrow(address asset, uint256 amount, address onBehalfOf, address to) external override {
-    debts[onBehalfOf] += amount;
-    IERC20(asset).safeTransfer(to, amount);
-  }
-
-  function repay(address asset, uint256 amount, address onBehalfOf) external override {
-    uint256 debt = debts[onBehalfOf];
-    if (amount > debt) {
-      revert MEA_RepayTooMuch();
+    function withdrawCollateral(address asset, uint256 amount, address onBehalfOf, address to) external override {
+        uint256 balance = collateralBalances[onBehalfOf][asset];
+        if (amount > balance) {
+            revert MEA_InsufficientCollateral();
+        }
+        collateralBalances[onBehalfOf][asset] = balance - amount;
+        IERC20(asset).safeTransfer(to, amount);
     }
-    IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
-    debts[onBehalfOf] = debt - amount;
-  }
+
+    function borrow(address asset, uint256 amount, address onBehalfOf, address to) external override {
+        debts[onBehalfOf] += amount;
+        IERC20(asset).safeTransfer(to, amount);
+    }
+
+    function repay(address asset, uint256 amount, address onBehalfOf) external override {
+        uint256 debt = debts[onBehalfOf];
+        if (amount > debt) {
+            revert MEA_RepayTooMuch();
+        }
+        IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
+        debts[onBehalfOf] = debt - amount;
+    }
 }

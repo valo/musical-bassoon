@@ -14,4 +14,8 @@ remappings = [
   "src/=lib/v2-matching/lib/lyra-utils/src/"
 ]
 
+# Formatting
+[fmt]
+ignore = ["lib/**"]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
