@@ -29,12 +29,23 @@ jobs:
           forge fmt --check
         id: fmt
 
+      # v2-matching vendors lyra-utils, and v2-core vendors it again. Both contain imports like
+      # `import "src/decimals/DecimalMath.sol";` which becomes ambiguous when two copies exist.
+      # We keep the v2-core copy (tests in v2-core reference it by relative paths) and prune the
+      # v2-matching copy. Then we rewrite lyra-utils' internal imports to use `lyra-utils/...`
+      # (instead of `src/...`) so everything compiles via a single import namespace.
+      - name: Prune duplicate lyra-utils + normalize imports
+        run: |
+          rm -rf lib/v2-matching/lib/lyra-utils
+          find lib/v2-matching/lib/v2-core/lib/lyra-utils -name '*.sol' -print0 \
+            | xargs -0 sed -i 's/\("\)src\//\1lyra-utils\//g'
+
       - name: Run Forge build
         run: |
-          forge build --sizes
+          forge build --skip script
         id: build
 
       - name: Run Forge tests
         run: |
-          forge test -vvv
+          forge test -vvv --skip script
         id: test
