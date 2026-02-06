@@ -301,13 +301,11 @@ contract CollarTSA is CollateralManagementTSA {
         uint256 loanId = 0;
         bytes memory rfqExtraData = extraData;
         if (extraData.length != 0) {
-            // Mandate-aware callback format (best-effort, backwards compatible):
+            // AtomicSigningExecutor callback format (required for all taker RFQs, including spot RFQs):
             // abi.encode(uint256 loanId, bytes rfqExtraData)
-            // If the payload doesn't match that ABI layout, treat it as legacy rfqExtraData.
-            (bool ok, uint256 decodedLoanId, bytes memory decodedRfqExtraData) = _tryDecodeMandateExtraData(extraData);
-            if (ok) {
-                loanId = decodedLoanId;
-                rfqExtraData = decodedRfqExtraData;
+            (loanId, rfqExtraData) = abi.decode(extraData, (uint256, bytes));
+            if (loanId == 0) {
+                revert CTSA_InvalidRfqTradeDetails();
             }
         }
 
@@ -330,50 +328,6 @@ contract CollarTSA is CollateralManagementTSA {
         }
 
         _verifyCollarRfqTrades(makerTrades, isTaker, loanId);
-    }
-
-    function _tryDecodeMandateExtraData(bytes memory extraData)
-        internal
-        pure
-        returns (bool ok, uint256 loanId, bytes memory rfqExtraData)
-    {
-        // ABI layout for (uint256, bytes):
-        // head[0] = loanId
-        // head[1] = offset to bytes (should be 0x40)
-        // tail: [bytes length][bytes data]
-        if (extraData.length < 96) {
-            return (false, 0, bytes(""));
-        }
-
-        uint256 offset;
-        uint256 len;
-        assembly {
-            // extraData points to the bytes length slot; data starts at +32.
-            loanId := mload(add(extraData, 0x20))
-            offset := mload(add(extraData, 0x40))
-        }
-
-        if (offset != 0x40) {
-            return (false, 0, bytes(""));
-        }
-
-        assembly {
-            len := mload(add(extraData, 0x60))
-        }
-
-        // Ensure the tail fits in the provided bytes.
-        if (0x60 + 0x20 + len > extraData.length + 0x20) {
-            return (false, 0, bytes(""));
-        }
-
-        rfqExtraData = new bytes(len);
-        assembly {
-            let src := add(extraData, 0x80)
-            let dst := add(rfqExtraData, 0x20)
-            for { let i := 0 } lt(i, len) { i := add(i, 0x20) } { mstore(add(dst, i), mload(add(src, i))) }
-        }
-
-        return (true, loanId, rfqExtraData);
     }
 
     function _verifyCollarRfqTrades(IRfqModule.TradeData[] memory makerTrades, bool isTaker, uint256 loanId)

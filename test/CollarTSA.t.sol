@@ -250,7 +250,7 @@ contract CollarTSA_ValidationTests is CollarTSATestUtils {
 
         vm.prank(signer);
         vm.expectRevert(CollarTSA.CTSA_TradeDataDoesNotMatchOrderHash.selector);
-        collarTsa.signActionData(action, abi.encode(trades));
+        collarTsa.signActionData(action, abi.encode(uint256(1), abi.encode(trades)));
     }
 
     function _openCollarPosition(int256 amount) internal {
@@ -301,7 +301,7 @@ contract CollarTSA_ValidationTests is CollarTSATestUtils {
         });
 
         vm.prank(signer);
-        tsa.signActionData(actions[1], abi.encode(trades));
+        tsa.signActionData(actions[1], abi.encode(uint256(1), abi.encode(trades)));
 
         IRfqModule.FillData memory fill = IRfqModule.FillData({
             makerAccount: nonVaultSubacc, takerAccount: tsaSubacc, makerFee: 0, takerFee: 0, managerData: bytes("")
@@ -333,7 +333,7 @@ contract CollarTSA_ValidationTests is CollarTSATestUtils {
         });
 
         vm.prank(signer);
-        collarTsa.signActionData(action, abi.encode(trades));
+        collarTsa.signActionData(action, abi.encode(uint256(1), abi.encode(trades)));
     }
 
     function testRejectsSpotRfqSellAsMaker() public {

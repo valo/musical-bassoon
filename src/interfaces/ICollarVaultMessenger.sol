@@ -20,9 +20,5 @@ interface ICollarVaultMessenger {
         payable
         returns (MessagingReceipt memory receipt);
 
-    /// @dev Preferred accessor (returns the struct directly).
     function receivedMessage(bytes32 guid) external view returns (CollarLZMessages.Message memory message);
-
-    /// @dev Legacy/public-mapping style accessor.
-    function receivedMessages(bytes32 guid) external view returns (CollarLZMessages.Message memory message);
 }

@@ -222,8 +222,9 @@ contract LZMessagingTest is Test {
 
         _deliverToMessenger(endpointL2.lastGuid(), ackMessage);
 
-        (CollarLZMessages.Action storedAction, uint256 storedLoanId,,,,,,,,,) =
-            messenger.receivedMessages(endpointL2.lastGuid());
+        CollarLZMessages.Message memory stored = messenger.receivedMessage(endpointL2.lastGuid());
+        CollarLZMessages.Action storedAction = stored.action;
+        uint256 storedLoanId = stored.loanId;
         assertEq(storedLoanId, message.loanId);
         assertEq(uint8(storedAction), uint8(CollarLZMessages.Action.DepositConfirmed));
     }
@@ -336,11 +337,10 @@ contract LZMessagingTest is Test {
 
         _deliverToMessenger(endpointL2.lastGuid(), tradeMessage);
 
-        (, uint256 storedLoanId,,,,,,, bytes32 storedQuoteHash, uint256 storedTakerNonce,) =
-            messenger.receivedMessages(endpointL2.lastGuid());
-        assertEq(storedLoanId, 1);
-        assertEq(storedQuoteHash, quoteHash);
-        assertEq(storedTakerNonce, takerNonce);
+        CollarLZMessages.Message memory stored = messenger.receivedMessage(endpointL2.lastGuid());
+        assertEq(stored.loanId, 1);
+        assertEq(stored.quoteHash, quoteHash);
+        assertEq(stored.takerNonce, takerNonce);
     }
 
     function testSendCollateralReturnedStoresOnL1() public {
@@ -365,11 +365,10 @@ contract LZMessagingTest is Test {
 
         _deliverToMessenger(endpointL2.lastGuid(), returnedMessage);
 
-        (CollarLZMessages.Action storedAction, uint256 storedLoanId,,,,, bytes32 storedSocketMessageId,,,,) =
-            messenger.receivedMessages(endpointL2.lastGuid());
-        assertEq(uint8(storedAction), uint8(CollarLZMessages.Action.CollateralReturned));
-        assertEq(storedLoanId, 1);
-        assertEq(storedSocketMessageId, socketMessageId);
+        CollarLZMessages.Message memory stored = messenger.receivedMessage(endpointL2.lastGuid());
+        assertEq(uint8(stored.action), uint8(CollarLZMessages.Action.CollateralReturned));
+        assertEq(stored.loanId, 1);
+        assertEq(stored.socketMessageId, socketMessageId);
     }
 
     function testSendCollateralReturnedRevertsAfterTradeConfirmed() public {

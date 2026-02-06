@@ -879,10 +879,10 @@ contract CollarVaultTest is Test {
 }
 
 contract MockLZMessenger {
-    mapping(bytes32 => CollarLZMessages.Message) public receivedMessages;
+    mapping(bytes32 => CollarLZMessages.Message) private _receivedMessages;
 
     function receivedMessage(bytes32 guid) external view returns (CollarLZMessages.Message memory message) {
-        return receivedMessages[guid];
+        return _receivedMessages[guid];
     }
     CollarLZMessages.Message public lastSentMessage;
     bytes32 public lastSentGuid;
@@ -915,7 +915,7 @@ contract MockLZMessenger {
     }
 
     function setMessage(bytes32 guid, CollarLZMessages.Message memory message) external {
-        receivedMessages[guid] = message;
+        _receivedMessages[guid] = message;
     }
 
     function getLastSentMessage() external view returns (CollarLZMessages.Message memory) {

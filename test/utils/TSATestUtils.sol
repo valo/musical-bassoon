@@ -618,7 +618,7 @@ contract TSATestUtils is IntegrationTestBase, MatchingHelpers {
             signer: address(tsa)
         });
         vm.prank(signer);
-        tsa.signActionData(actions[1], abi.encode(order.trades));
+        tsa.signActionData(actions[1], abi.encode(uint256(1), abi.encode(order.trades)));
 
         IRfqModule.FillData memory fill = IRfqModule.FillData({
             makerAccount: nonVaultSubacc, takerAccount: tsaSubacc, makerFee: 0, takerFee: 0, managerData: bytes("")
