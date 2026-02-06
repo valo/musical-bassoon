@@ -22,6 +22,10 @@ contract CollarVaultMessenger is AccessControl, OApp {
 
     mapping(bytes32 => CollarLZMessages.Message) public receivedMessages;
 
+    function receivedMessage(bytes32 guid) external view returns (CollarLZMessages.Message memory message) {
+        return receivedMessages[guid];
+    }
+
     event MessageSent(bytes32 indexed guid, CollarLZMessages.Action action, uint256 indexed loanId);
     event MessageReceived(bytes32 indexed guid, CollarLZMessages.Action action, uint256 indexed loanId);
     event RemoteEidUpdated(uint32 remoteEid);

@@ -163,7 +163,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
 
@@ -344,7 +345,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
 
@@ -374,7 +376,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
 
@@ -414,7 +417,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
 
@@ -447,7 +451,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
 
@@ -490,7 +495,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
 
@@ -522,7 +528,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
 
@@ -552,7 +559,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
 
@@ -590,7 +598,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
 
@@ -631,7 +640,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
 
@@ -795,7 +805,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: bytes32(0),
                 secondaryAmount: 0,
                 quoteHash: bytes32(0),
-                takerNonce: 0
+                takerNonce: 0,
+                data: bytes("")
             })
         );
     }
@@ -820,7 +831,8 @@ contract CollarVaultTest is Test {
                 socketMessageId: socketMessageId,
                 secondaryAmount: 0,
                 quoteHash: quoteHash,
-                takerNonce: takerNonce
+                takerNonce: takerNonce,
+                data: bytes("")
             })
         );
     }
@@ -868,6 +880,10 @@ contract CollarVaultTest is Test {
 
 contract MockLZMessenger {
     mapping(bytes32 => CollarLZMessages.Message) public receivedMessages;
+
+    function receivedMessage(bytes32 guid) external view returns (CollarLZMessages.Message memory message) {
+        return receivedMessages[guid];
+    }
     CollarLZMessages.Message public lastSentMessage;
     bytes32 public lastSentGuid;
     bytes public defaultOptions;

@@ -22,6 +22,22 @@ import {IRfqModule} from "v2-matching/src/interfaces/IRfqModule.sol";
 import {StandardManager, IStandardManager, IVolFeed, IForwardFeed} from "v2-core/src/risk-managers/StandardManager.sol";
 import {CollateralManagementTSA} from "v2-matching/src/tokenizedSubaccounts/CollateralManagementTSA.sol";
 
+interface IMandateStore {
+    function mandates(uint256 loanId)
+        external
+        view
+        returns (
+            address borrower,
+            address collateralAsset,
+            uint256 borrowAmount,
+            uint256 minCallStrike,
+            uint256 maxPutStrike,
+            uint64 maturity,
+            uint64 deadline,
+            bool consumed
+        );
+}
+
 /// @title CollarTSA
 /// @notice TSA that allows selling covered calls and buying long puts for collar construction.
 contract CollarTSA is CollateralManagementTSA {
@@ -77,6 +93,9 @@ contract CollarTSA is CollateralManagementTSA {
         CollateralManagementParams collateralManagementParams;
         /// @dev Only one hash is considered valid at a time, and it is revoked when a new one comes in.
         bytes32 lastSeenHash;
+
+        /// @dev L2 mandate store (CollarTSAReceiver) to enforce borrower mandates during atomic callbacks.
+        address mandateStore;
     }
 
     // keccak256(abi.encode(uint256(keccak256("lyra.storage.CollarTSA")) - 1)) & ~bytes32(uint256(0xff))
@@ -151,6 +170,14 @@ contract CollarTSA is CollateralManagementTSA {
         _getCollarTSAStorage().collateralManagementParams = newCollateralMgmtParams;
 
         emit CMTSAParamsSet(newCollateralMgmtParams);
+    }
+
+    function setMandateStore(address store) external onlyOwner {
+        _getCollarTSAStorage().mandateStore = store;
+    }
+
+    function mandateStore() public view returns (address) {
+        return _getCollarTSAStorage().mandateStore;
     }
 
     function _getCollateralManagementParams() internal view override returns (CollateralManagementParams storage $) {
@@ -267,17 +294,34 @@ contract CollarTSA is CollateralManagementTSA {
     /// @dev If extraData is 0, the action is a maker action; otherwise, it is a taker action.
     function _verifyRfqAction(IMatching.Action memory action, bytes memory extraData) internal view {
         // TODO: Confirm whether RFQ maxFee should be bounded by on-chain parameters for collar trades.
+        // AtomicSigningExecutor callback `extraData` is used to carry mandate context as well.
+        // Format (preferred): abi.encode(uint256 loanId, bytes rfqExtraData)
+        // - rfqExtraData is the same data that would have previously been passed as extraData,
+        //   i.e. the ABI-encoded `IRfqModule.TradeData[]` for taker orders.
+        uint256 loanId = 0;
+        bytes memory rfqExtraData = extraData;
+        if (extraData.length != 0) {
+            // Mandate-aware callback format (best-effort, backwards compatible):
+            // abi.encode(uint256 loanId, bytes rfqExtraData)
+            // If the payload doesn't match that ABI layout, treat it as legacy rfqExtraData.
+            (bool ok, uint256 decodedLoanId, bytes memory decodedRfqExtraData) = _tryDecodeMandateExtraData(extraData);
+            if (ok) {
+                loanId = decodedLoanId;
+                rfqExtraData = decodedRfqExtraData;
+            }
+        }
+
         IRfqModule.TradeData[] memory makerTrades;
-        bool isTaker = extraData.length != 0;
+        bool isTaker = rfqExtraData.length != 0;
         if (!isTaker) {
             IRfqModule.RfqOrder memory makerOrder = abi.decode(action.data, (IRfqModule.RfqOrder));
             makerTrades = makerOrder.trades;
         } else {
             IRfqModule.TakerOrder memory takerOrder = abi.decode(action.data, (IRfqModule.TakerOrder));
-            if (keccak256(extraData) != takerOrder.orderHash) {
+            if (keccak256(rfqExtraData) != takerOrder.orderHash) {
                 revert CTSA_TradeDataDoesNotMatchOrderHash();
             }
-            makerTrades = abi.decode(extraData, (IRfqModule.TradeData[]));
+            makerTrades = abi.decode(rfqExtraData, (IRfqModule.TradeData[]));
         }
 
         if (_isSpotRfqTrade(makerTrades)) {
@@ -285,15 +329,102 @@ contract CollarTSA is CollateralManagementTSA {
             return;
         }
 
-        _verifyCollarRfqTrades(makerTrades, isTaker);
+        _verifyCollarRfqTrades(makerTrades, isTaker, loanId);
     }
 
-    function _verifyCollarRfqTrades(IRfqModule.TradeData[] memory makerTrades, bool isTaker) internal view {
+    function _tryDecodeMandateExtraData(bytes memory extraData)
+        internal
+        pure
+        returns (bool ok, uint256 loanId, bytes memory rfqExtraData)
+    {
+        // ABI layout for (uint256, bytes):
+        // head[0] = loanId
+        // head[1] = offset to bytes (should be 0x40)
+        // tail: [bytes length][bytes data]
+        if (extraData.length < 96) {
+            return (false, 0, bytes(""));
+        }
+
+        uint256 offset;
+        uint256 len;
+        assembly {
+            // extraData points to the bytes length slot; data starts at +32.
+            loanId := mload(add(extraData, 0x20))
+            offset := mload(add(extraData, 0x40))
+        }
+
+        if (offset != 0x40) {
+            return (false, 0, bytes(""));
+        }
+
+        assembly {
+            len := mload(add(extraData, 0x60))
+        }
+
+        // Ensure the tail fits in the provided bytes.
+        if (0x60 + 0x20 + len > extraData.length + 0x20) {
+            return (false, 0, bytes(""));
+        }
+
+        rfqExtraData = new bytes(len);
+        assembly {
+            let src := add(extraData, 0x80)
+            let dst := add(rfqExtraData, 0x20)
+            for { let i := 0 } lt(i, len) { i := add(i, 0x20) } { mstore(add(dst, i), mload(add(src, i))) }
+        }
+
+        return (true, loanId, rfqExtraData);
+    }
+
+    function _verifyCollarRfqTrades(IRfqModule.TradeData[] memory makerTrades, bool isTaker, uint256 loanId)
+        internal
+        view
+    {
         CollarTSAStorage storage $ = _getCollarTSAStorage();
         (CollarLeg memory callLeg, CollarLeg memory putLeg) = _splitRfqLegs(makerTrades, address($.optionAsset));
 
         if (callLeg.expiry != putLeg.expiry) {
             revert CTSA_InvalidRfqTradeDetails();
+        }
+
+        // Enforce borrower mandate constraints if provided.
+        address store = $.mandateStore;
+        if (store != address(0) && loanId != 0) {
+            (
+                address borrower,
+                address collateralAsset,
+                uint256 borrowAmount,
+                uint256 minCallStrike,
+                uint256 maxPutStrike,
+                uint64 maturity,
+                uint64 deadline,
+                bool consumed
+            ) = IMandateStore(store).mandates(loanId);
+
+            // Basic sanity checks. If no mandate exists, borrower == 0.
+            if (borrower == address(0) || consumed) {
+                revert CTSA_InvalidRfqTradeDetails();
+            }
+            if (deadline != 0 && block.timestamp > deadline) {
+                revert CTSA_InvalidRfqTradeDetails();
+            }
+
+            // Mandate requires exact maturity == option expiry.
+            if (maturity != 0 && callLeg.expiry != maturity) {
+                revert CTSA_InvalidRfqTradeDetails();
+            }
+
+            // Strike bounds.
+            if (minCallStrike != 0 && callLeg.strike < minCallStrike) {
+                revert CTSA_InvalidRfqTradeDetails();
+            }
+            if (maxPutStrike != 0 && putLeg.strike > maxPutStrike) {
+                revert CTSA_InvalidRfqTradeDetails();
+            }
+
+            // borrowAmount is not directly observable in RFQ leg data; it is enforced on L1 when finalizing the loan.
+            borrowAmount;
+            collateralAsset;
         }
 
         int256 callAmount = isTaker ? -callLeg.trade.amount : callLeg.trade.amount;

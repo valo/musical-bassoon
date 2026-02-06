@@ -45,6 +45,19 @@ contract CollarTSAReceiver is AccessControl, OApp {
     mapping(uint256 => bool) public returnCompleted;
     mapping(uint256 => bool) public tradeConfirmed;
 
+    struct Mandate {
+        address borrower;
+        address collateralAsset;
+        uint256 borrowAmount;
+        uint256 minCallStrike;
+        uint256 maxPutStrike;
+        uint64 maturity;
+        uint64 deadline;
+        bool consumed;
+    }
+
+    mapping(uint256 => Mandate) public mandates;
+
     event MessageReceived(bytes32 indexed guid, CollarLZMessages.Action action, uint256 indexed loanId);
     event MessageHandled(bytes32 indexed guid, CollarLZMessages.Action action, uint256 indexed loanId);
     event MessageSent(bytes32 indexed guid, CollarLZMessages.Action action, uint256 indexed loanId);
@@ -136,6 +149,25 @@ contract CollarTSAReceiver is AccessControl, OApp {
             }
         }
 
+        if (message.action == CollarLZMessages.Action.MandateCreated) {
+            (address borrower, uint256 minCallStrike, uint256 maxPutStrike, uint64 maturity, uint64 deadline) =
+                abi.decode(message.data, (address, uint256, uint256, uint64, uint64));
+
+            mandates[message.loanId] = Mandate({
+                borrower: borrower,
+                collateralAsset: message.asset,
+                borrowAmount: message.amount,
+                minCallStrike: minCallStrike,
+                maxPutStrike: maxPutStrike,
+                maturity: maturity,
+                deadline: deadline,
+                consumed: false
+            });
+            handledMessages[guid] = true;
+            emit MessageHandled(guid, message.action, message.loanId);
+            return;
+        }
+
         if (message.action == CollarLZMessages.Action.DepositIntent) {
             if (message.recipient == address(0)) {
                 revert CTR_InvalidRecipient();
@@ -189,7 +221,8 @@ contract CollarTSAReceiver is AccessControl, OApp {
             socketMessageId: socketMessageId,
             secondaryAmount: collateralSold,
             quoteHash: bytes32(0),
-            takerNonce: 0
+            takerNonce: 0,
+            data: bytes("")
         });
 
         return _send(message, defaultOptions);
@@ -223,7 +256,8 @@ contract CollarTSAReceiver is AccessControl, OApp {
             socketMessageId: socketMessageId,
             secondaryAmount: 0,
             quoteHash: bytes32(0),
-            takerNonce: 0
+            takerNonce: 0,
+            data: bytes("")
         });
         returnCompleted[loanId] = true;
         returnRequested[loanId] = false;
@@ -273,7 +307,8 @@ contract CollarTSAReceiver is AccessControl, OApp {
             socketMessageId: socketMessageId,
             secondaryAmount: 0,
             quoteHash: quoteHash,
-            takerNonce: takerNonce
+            takerNonce: takerNonce,
+            data: bytes("")
         });
 
         MessagingReceipt memory receipt = _send(message, defaultOptions);
@@ -349,7 +384,8 @@ contract CollarTSAReceiver is AccessControl, OApp {
             socketMessageId: origin.socketMessageId,
             secondaryAmount: 0,
             quoteHash: bytes32(0),
-            takerNonce: 0
+            takerNonce: 0,
+            data: bytes("")
         });
 
         _send(message, defaultOptions);

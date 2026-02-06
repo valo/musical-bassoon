@@ -127,6 +127,21 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     mapping(uint256 => Loan) public loans;
     mapping(uint256 => PendingDeposit) public pendingDeposits;
     mapping(uint256 => Quote) public pendingQuotes;
+
+    struct Mandate {
+        address borrower;
+        address collateralAsset;
+        uint256 collateralAmount;
+        uint64 maturity;
+        uint64 deadline;
+        uint256 borrowAmount;
+        uint256 minCallStrike;
+        uint256 maxPutStrike;
+        bool sentToL2;
+    }
+
+    mapping(uint256 => Mandate) public mandates;
+
     mapping(uint256 => bool) public tradeConfirmed;
     mapping(uint256 => bool) public collateralActivated;
     mapping(uint256 => bool) public returnRequested;
@@ -228,6 +243,16 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
         uint256 indexed loanId, address indexed borrower, address indexed collateralAsset, uint256 collateralAmount
     );
     event TradeConfirmedRecorded(uint256 indexed loanId, bytes32 guid);
+    event MandateAccepted(
+        uint256 indexed loanId,
+        address indexed borrower,
+        uint64 maturity,
+        uint256 borrowAmount,
+        uint256 minCallStrike,
+        uint256 maxPutStrike,
+        uint64 deadline,
+        bytes32 lzGuid
+    );
 
     constructor(
         address admin,
@@ -322,6 +347,101 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
         usedQuotes[quoteHash] = true;
     }
 
+    /// @notice Accept an on-chain mandate (constraints) for the keeper to satisfy on L2.
+    /// @dev Mandates must be mirrored L1->L2 via LayerZero since the TSA lives on a different network.
+    function acceptMandate(uint256 loanId, uint256 minCallStrike, uint64 deadline)
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+        returns (bytes32 lzGuid)
+    {
+        PendingDeposit memory pending = pendingDeposits[loanId];
+        if (pending.borrower == address(0)) {
+            revert CV_PendingDepositNotFound();
+        }
+        if (pending.borrower != msg.sender) {
+            revert CV_NotBorrower();
+        }
+        if (address(lzMessenger) == address(0)) {
+            revert CV_LZMessengerNotSet();
+        }
+        if (deriveSubaccountId == 0) {
+            revert CV_InvalidSubaccount();
+        }
+        if (deadline <= block.timestamp) {
+            revert CV_QuoteExpired();
+        }
+        if (mandates[loanId].borrower != address(0)) {
+            revert CV_PendingQuoteAlreadySet();
+        }
+        if (pending.maturity > type(uint64).max) {
+            revert CV_InvalidMaturity();
+        }
+        if (minCallStrike == 0) {
+            revert CV_InvalidAmount();
+        }
+
+        // In the new flow, putStrike is the maxPutStrike.
+        uint256 maxPutStrike = pending.putStrike;
+
+        mandates[loanId] = Mandate({
+            borrower: pending.borrower,
+            collateralAsset: pending.collateralAsset,
+            collateralAmount: pending.collateralAmount,
+            maturity: uint64(pending.maturity),
+            deadline: deadline,
+            borrowAmount: pending.borrowAmount,
+            minCallStrike: minCallStrike,
+            maxPutStrike: maxPutStrike,
+            sentToL2: true
+        });
+
+        bytes memory mandateData =
+            abi.encode(pending.borrower, minCallStrike, maxPutStrike, uint64(pending.maturity), deadline);
+
+        CollarLZMessages.Message memory message = CollarLZMessages.Message({
+            action: CollarLZMessages.Action.MandateCreated,
+            loanId: loanId,
+            asset: pending.collateralAsset,
+            amount: pending.borrowAmount,
+            recipient: address(this),
+            subaccountId: deriveSubaccountId,
+            socketMessageId: bytes32(0),
+            secondaryAmount: 0,
+            quoteHash: bytes32(0),
+            takerNonce: 0,
+            data: mandateData
+        });
+
+        bytes memory options = lzMessenger.defaultOptions();
+        MessagingFee memory lzFee = lzMessenger.quoteMessage(message, options);
+        if (msg.value < lzFee.nativeFee) {
+            revert CV_InsufficientBridgeFees();
+        }
+
+        MessagingReceipt memory receipt = lzMessenger.sendMessage{value: lzFee.nativeFee}(message);
+        lzGuid = receipt.guid;
+
+        if (msg.value > lzFee.nativeFee) {
+            (bool success,) = msg.sender.call{value: msg.value - lzFee.nativeFee}("");
+            if (!success) {
+                revert CV_RefundFailed();
+            }
+        }
+
+        emit MandateAccepted(
+            loanId,
+            pending.borrower,
+            uint64(pending.maturity),
+            pending.borrowAmount,
+            minCallStrike,
+            maxPutStrike,
+            deadline,
+            lzGuid
+        );
+    }
+
     /// @notice Finalize a loan once deposit and RFQ trades have been confirmed on L2.
     function finalizeLoan(uint256 loanId, bytes32 depositGuid, bytes32 tradeGuid)
         external
@@ -392,7 +512,8 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
             socketMessageId: bytes32(0),
             secondaryAmount: 0,
             quoteHash: bytes32(0),
-            takerNonce: 0
+            takerNonce: 0,
+            data: bytes("")
         });
 
         bytes memory options = lzMessenger.defaultOptions();
@@ -883,7 +1004,8 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
             socketMessageId: socketMessageId,
             secondaryAmount: 0,
             quoteHash: bytes32(0),
-            takerNonce: 0
+            takerNonce: 0,
+            data: bytes("")
         });
 
         bytes memory options = lzMessenger.defaultOptions();
@@ -1020,70 +1142,22 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
         if (lzMessageConsumed[guid]) {
             revert CV_LZMessageConsumed();
         }
-        (
-            CollarLZMessages.Action action,
-            uint256 loanId,
-            address asset,
-            uint256 amount,
-            address recipient,
-            uint256 subaccountId,
-            bytes32 socketMessageId,
-            uint256 secondaryAmount,
-            bytes32 quoteHash,
-            uint256 takerNonce
-        ) = lzMessenger.receivedMessages(guid);
 
-        if (loanId == 0) {
+        message = lzMessenger.receivedMessage(guid);
+        if (message.loanId == 0) {
             revert CV_LZMessageNotFound();
         }
-
-        message = CollarLZMessages.Message({
-            action: action,
-            loanId: loanId,
-            asset: asset,
-            amount: amount,
-            recipient: recipient,
-            subaccountId: subaccountId,
-            socketMessageId: socketMessageId,
-            secondaryAmount: secondaryAmount,
-            quoteHash: quoteHash,
-            takerNonce: takerNonce
-        });
     }
 
     function _peekLZMessage(bytes32 guid) internal view returns (CollarLZMessages.Message memory message) {
         if (address(lzMessenger) == address(0)) {
             revert CV_LZMessengerNotSet();
         }
-        (
-            CollarLZMessages.Action action,
-            uint256 loanId,
-            address asset,
-            uint256 amount,
-            address recipient,
-            uint256 subaccountId,
-            bytes32 socketMessageId,
-            uint256 secondaryAmount,
-            bytes32 quoteHash,
-            uint256 takerNonce
-        ) = lzMessenger.receivedMessages(guid);
 
-        if (loanId == 0) {
+        message = lzMessenger.receivedMessage(guid);
+        if (message.loanId == 0) {
             revert CV_LZMessageNotFound();
         }
-
-        message = CollarLZMessages.Message({
-            action: action,
-            loanId: loanId,
-            asset: asset,
-            amount: amount,
-            recipient: recipient,
-            subaccountId: subaccountId,
-            socketMessageId: socketMessageId,
-            secondaryAmount: secondaryAmount,
-            quoteHash: quoteHash,
-            takerNonce: takerNonce
-        });
     }
 
     /// @notice Record that a trade was confirmed on L2 and mark collateral activated.

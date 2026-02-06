@@ -188,7 +188,7 @@ contract LZMessagingTest is Test {
 
         _deliverToReceiver(receipt.guid, message);
 
-        (CollarLZMessages.Action action, uint256 loanId,,,,,,,,) = receiver.pendingMessages(receipt.guid);
+        (CollarLZMessages.Action action, uint256 loanId,,,,,,,,,) = receiver.pendingMessages(receipt.guid);
         assertEq(loanId, message.loanId);
         assertEq(uint8(action), uint8(message.action));
     }
@@ -222,7 +222,7 @@ contract LZMessagingTest is Test {
 
         _deliverToMessenger(endpointL2.lastGuid(), ackMessage);
 
-        (CollarLZMessages.Action storedAction, uint256 storedLoanId,,,,,,,,) =
+        (CollarLZMessages.Action storedAction, uint256 storedLoanId,,,,,,,,,) =
             messenger.receivedMessages(endpointL2.lastGuid());
         assertEq(storedLoanId, message.loanId);
         assertEq(uint8(storedAction), uint8(CollarLZMessages.Action.DepositConfirmed));
@@ -336,7 +336,7 @@ contract LZMessagingTest is Test {
 
         _deliverToMessenger(endpointL2.lastGuid(), tradeMessage);
 
-        (, uint256 storedLoanId,,,,,,, bytes32 storedQuoteHash, uint256 storedTakerNonce) =
+        (, uint256 storedLoanId,,,,,,, bytes32 storedQuoteHash, uint256 storedTakerNonce,) =
             messenger.receivedMessages(endpointL2.lastGuid());
         assertEq(storedLoanId, 1);
         assertEq(storedQuoteHash, quoteHash);
@@ -365,7 +365,7 @@ contract LZMessagingTest is Test {
 
         _deliverToMessenger(endpointL2.lastGuid(), returnedMessage);
 
-        (CollarLZMessages.Action storedAction, uint256 storedLoanId,,,,, bytes32 storedSocketMessageId,,,) =
+        (CollarLZMessages.Action storedAction, uint256 storedLoanId,,,,, bytes32 storedSocketMessageId,,,,) =
             messenger.receivedMessages(endpointL2.lastGuid());
         assertEq(uint8(storedAction), uint8(CollarLZMessages.Action.CollateralReturned));
         assertEq(storedLoanId, 1);
@@ -409,7 +409,8 @@ contract LZMessagingTest is Test {
             socketMessageId: socketMessageId,
             secondaryAmount: 0,
             quoteHash: bytes32(0),
-            takerNonce: 0
+            takerNonce: 0,
+            data: bytes("")
         });
     }
 
