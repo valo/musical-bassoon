@@ -259,23 +259,61 @@ contract CollarTSAReceiver is AccessControl, OApp {
         return _send(message, defaultOptions);
     }
 
-    function sendTradeConfirmed(
-        uint256 loanId,
-        address asset,
-        uint256 amount,
-        bytes32 socketMessageId,
-        bytes32 quoteHash,
-        uint256 takerNonce
-    ) external payable onlyRole(KEEPER_ROLE) returns (MessagingReceipt memory) {
+    struct TradeConfirmedParams {
+        uint256 loanId;
+        address asset;
+        uint256 amount;
+        bytes32 socketMessageId;
+        bytes32 quoteHash;
+        uint256 takerNonce;
+        uint256 callStrike;
+        uint256 putStrike;
+        uint64 expiry;
+    }
+
+    function sendTradeConfirmed(TradeConfirmedParams calldata p)
+        external
+        payable
+        onlyRole(KEEPER_ROLE)
+        returns (MessagingReceipt memory)
+    {
         if (vaultRecipient == address(0)) {
             revert CTR_InvalidRecipient();
         }
-        if (returnCompleted[loanId]) {
+        if (returnCompleted[p.loanId]) {
             revert CTR_TradeConfirmedAfterReturn();
         }
-        if (tradeConfirmed[loanId]) {
+        if (tradeConfirmed[p.loanId]) {
             revert CTR_TradeAlreadyConfirmed();
         }
+        _validateTradeConfirmedPreconditions(p.amount, p.socketMessageId, p.takerNonce);
+
+        CollarLZMessages.Message memory message = CollarLZMessages.Message({
+            action: CollarLZMessages.Action.TradeConfirmed,
+            loanId: p.loanId,
+            asset: p.asset,
+            amount: p.amount,
+            recipient: vaultRecipient,
+            subaccountId: tsa.subAccount(),
+            socketMessageId: p.socketMessageId,
+            secondaryAmount: 0,
+            quoteHash: p.quoteHash,
+            takerNonce: p.takerNonce,
+            data: abi.encode(p.callStrike, p.putStrike, p.expiry)
+        });
+
+        MessagingReceipt memory receipt = _send(message, defaultOptions);
+
+        loanStore.markConsumed(p.loanId);
+
+        tradeConfirmed[p.loanId] = true;
+        return receipt;
+    }
+
+    function _validateTradeConfirmedPreconditions(uint256 amount, bytes32 socketMessageId, uint256 takerNonce)
+        internal
+        view
+    {
         (,,,, address rfqModule,) = tsa.getCollarTSAAddresses();
         if (rfqModule == address(0)) {
             revert CTR_RfqModuleNotSet();
@@ -291,27 +329,6 @@ contract CollarTSAReceiver is AccessControl, OApp {
                 revert CTR_SocketNotFinalized();
             }
         }
-
-        CollarLZMessages.Message memory message = CollarLZMessages.Message({
-            action: CollarLZMessages.Action.TradeConfirmed,
-            loanId: loanId,
-            asset: asset,
-            amount: amount,
-            recipient: vaultRecipient,
-            subaccountId: tsa.subAccount(),
-            socketMessageId: socketMessageId,
-            secondaryAmount: 0,
-            quoteHash: quoteHash,
-            takerNonce: takerNonce,
-            data: bytes("")
-        });
-
-        MessagingReceipt memory receipt = _send(message, defaultOptions);
-
-        loanStore.markConsumed(loanId);
-
-        tradeConfirmed[loanId] = true;
-        return receipt;
     }
 
     function quoteMessage(CollarLZMessages.Message calldata message, bytes calldata options)

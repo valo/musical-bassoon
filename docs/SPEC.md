@@ -144,7 +144,7 @@ sequenceDiagram
   Keeper->>TSA: signActionData(RFQ taker)
   Keeper->>Match: verifyAndMatch(...)
   Note over Keeper,Socket: Withdraw origination fee (WithdrawalModule + Socket)
-  Keeper->>L2Recv: sendTradeConfirmed(loanId, fee, socketMessageId)
+  Keeper->>L2Recv: sendTradeConfirmed(loanId, fee, socketMessageId, callStrike, putStrike, expiry)
   L2Recv-->>LZ: send TradeConfirmed
   Keeper->>Vault: finalizeLoan(loanId, depositGuid, tradeGuid)
   Vault->>Treasury: transfer fee cut

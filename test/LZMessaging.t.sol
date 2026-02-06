@@ -263,7 +263,19 @@ contract LZMessagingTest is Test {
         bytes32 quoteHash = keccak256("quote");
         uint256 takerNonce = 7;
         rfqModule.setUsedNonce(address(tsa), takerNonce, true);
-        receiver.sendTradeConfirmed{value: 1}(1, address(token), 0, bytes32(0), quoteHash, takerNonce);
+        receiver.sendTradeConfirmed{value: 1}(
+            CollarTSAReceiver.TradeConfirmedParams({
+                loanId: 1,
+                asset: address(token),
+                amount: 0,
+                socketMessageId: bytes32(0),
+                quoteHash: quoteHash,
+                takerNonce: takerNonce,
+                callStrike: 0,
+                putStrike: 0,
+                expiry: 0
+            })
+        );
 
         CollarLZMessages.Message memory message = _buildMessage(CollarLZMessages.Action.ReturnRequest, bytes32(0));
         MessagingReceipt memory receipt = messenger.sendMessageWithOptions{value: 1}(message, "");
@@ -292,7 +304,19 @@ contract LZMessagingTest is Test {
         bytes32 socketMessageId = bytes32(uint256(555));
 
         vm.expectRevert(CollarTSAReceiver.CTR_RfqTradeNotConfirmed.selector);
-        receiver.sendTradeConfirmed{value: 1}(1, address(token), 1e18, socketMessageId, quoteHash, takerNonce);
+        receiver.sendTradeConfirmed{value: 1}(
+            CollarTSAReceiver.TradeConfirmedParams({
+                loanId: 1,
+                asset: address(token),
+                amount: 1e18,
+                socketMessageId: socketMessageId,
+                quoteHash: quoteHash,
+                takerNonce: takerNonce,
+                callStrike: 0,
+                putStrike: 0,
+                expiry: 0
+            })
+        );
     }
 
     function testSendTradeConfirmedAfterReturnRequestSucceeds() public {
@@ -304,7 +328,19 @@ contract LZMessagingTest is Test {
         bytes32 quoteHash = keccak256("quote");
         uint256 takerNonce = 9;
         rfqModule.setUsedNonce(address(tsa), takerNonce, true);
-        receiver.sendTradeConfirmed{value: 1}(1, address(token), 0, bytes32(0), quoteHash, takerNonce);
+        receiver.sendTradeConfirmed{value: 1}(
+            CollarTSAReceiver.TradeConfirmedParams({
+                loanId: 1,
+                asset: address(token),
+                amount: 0,
+                socketMessageId: bytes32(0),
+                quoteHash: quoteHash,
+                takerNonce: takerNonce,
+                callStrike: 0,
+                putStrike: 0,
+                expiry: 0
+            })
+        );
         assertTrue(receiver.tradeConfirmed(1));
     }
 
@@ -313,10 +349,34 @@ contract LZMessagingTest is Test {
         uint256 takerNonce = 10;
         rfqModule.setUsedNonce(address(tsa), takerNonce, true);
 
-        receiver.sendTradeConfirmed{value: 1}(1, address(token), 0, bytes32(0), quoteHash, takerNonce);
+        receiver.sendTradeConfirmed{value: 1}(
+            CollarTSAReceiver.TradeConfirmedParams({
+                loanId: 1,
+                asset: address(token),
+                amount: 0,
+                socketMessageId: bytes32(0),
+                quoteHash: quoteHash,
+                takerNonce: takerNonce,
+                callStrike: 0,
+                putStrike: 0,
+                expiry: 0
+            })
+        );
 
         vm.expectRevert(CollarTSAReceiver.CTR_TradeAlreadyConfirmed.selector);
-        receiver.sendTradeConfirmed{value: 1}(1, address(token), 0, bytes32(0), quoteHash, takerNonce);
+        receiver.sendTradeConfirmed{value: 1}(
+            CollarTSAReceiver.TradeConfirmedParams({
+                loanId: 1,
+                asset: address(token),
+                amount: 0,
+                socketMessageId: bytes32(0),
+                quoteHash: quoteHash,
+                takerNonce: takerNonce,
+                callStrike: 0,
+                putStrike: 0,
+                expiry: 0
+            })
+        );
     }
 
     function testSendTradeConfirmedStoresOnL1() public {
@@ -328,7 +388,19 @@ contract LZMessagingTest is Test {
         rfqModule.setUsedNonce(address(tsa), takerNonce, true);
         socket.setExecuted(socketMessageId, true);
 
-        receiver.sendTradeConfirmed{value: 1}(1, address(token), amount, socketMessageId, quoteHash, takerNonce);
+        receiver.sendTradeConfirmed{value: 1}(
+            CollarTSAReceiver.TradeConfirmedParams({
+                loanId: 1,
+                asset: address(token),
+                amount: amount,
+                socketMessageId: socketMessageId,
+                quoteHash: quoteHash,
+                takerNonce: takerNonce,
+                callStrike: 25_000e6,
+                putStrike: 20_000e6,
+                expiry: uint64(block.timestamp + 30 days)
+            })
+        );
 
         CollarLZMessages.Message memory tradeMessage = abi.decode(endpointL2.lastMessage(), (CollarLZMessages.Message));
         assertEq(uint8(tradeMessage.action), uint8(CollarLZMessages.Action.TradeConfirmed));
@@ -339,6 +411,12 @@ contract LZMessagingTest is Test {
         assertEq(tradeMessage.socketMessageId, socketMessageId);
         assertEq(tradeMessage.quoteHash, quoteHash);
         assertEq(tradeMessage.takerNonce, takerNonce);
+
+        (uint256 callStrike, uint256 putStrike, uint64 expiry) =
+            abi.decode(tradeMessage.data, (uint256, uint256, uint64));
+        assertEq(callStrike, 25_000e6);
+        assertEq(putStrike, 20_000e6);
+        assertEq(expiry, uint64(block.timestamp + 30 days));
 
         _deliverToMessenger(endpointL2.lastGuid(), tradeMessage);
 
@@ -385,7 +463,19 @@ contract LZMessagingTest is Test {
         bytes32 quoteHash = keccak256("quote");
         uint256 takerNonce = 11;
         rfqModule.setUsedNonce(address(tsa), takerNonce, true);
-        receiver.sendTradeConfirmed{value: 1}(1, address(token), 0, bytes32(0), quoteHash, takerNonce);
+        receiver.sendTradeConfirmed{value: 1}(
+            CollarTSAReceiver.TradeConfirmedParams({
+                loanId: 1,
+                asset: address(token),
+                amount: 0,
+                socketMessageId: bytes32(0),
+                quoteHash: quoteHash,
+                takerNonce: takerNonce,
+                callStrike: 0,
+                putStrike: 0,
+                expiry: 0
+            })
+        );
 
         vm.expectRevert(CollarTSAReceiver.CTR_CollateralReturnedAfterTrade.selector);
         receiver.sendCollateralReturned{value: 1}(1, address(token), 2e18, bytes32(0));
