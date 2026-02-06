@@ -143,9 +143,9 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     error CV_CollateralNotAllowed();
     error CV_StrikeScaleUnset();
     error CV_InvalidBorrowAmount();
-    error CV_QuoteExpired();
+    error CV_MandateExpired();
     // (removed) CV_QuoteUsed / CV_InvalidQuoteSigner
-    error CV_QuoteNotExpired();
+    error CV_MandateNotExpired();
     error CV_InvalidLoanState();
     error CV_InsufficientSettlement();
     error CV_TreasuryBpsTooHigh();
@@ -161,8 +161,8 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     error CV_LZMessageRecipientMismatch();
     error CV_PendingDepositNotFound();
     error CV_PendingDepositReturnBlocked();
-    error CV_PendingQuoteNotFound();
-    error CV_PendingQuoteAlreadySet();
+    error CV_MandateNotFound();
+    error CV_MandateAlreadySet();
     error CV_ReturnAlreadyRequested();
     // (removed) CV_QuoteLoanIdMismatch / CV_DepositParamsMismatch
     error CV_TradeAlreadyConfirmed();
@@ -319,10 +319,10 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
             revert CV_InvalidSubaccount();
         }
         if (deadline <= block.timestamp) {
-            revert CV_QuoteExpired();
+            revert CV_MandateExpired();
         }
         if (mandates[loanId].borrower != address(0)) {
-            revert CV_PendingQuoteAlreadySet();
+            revert CV_MandateAlreadySet();
         }
 
         // Reserve liquidity once the mandate is accepted.
@@ -409,13 +409,13 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
 
         Mandate memory mandate = mandates[loanId];
         if (mandate.borrower == address(0)) {
-            revert CV_PendingQuoteNotFound();
+            revert CV_MandateNotFound();
         }
         if (mandate.borrower != pending.borrower) {
             revert CV_NotAuthorized();
         }
         if (block.timestamp > mandate.deadline) {
-            revert CV_QuoteExpired();
+            revert CV_MandateExpired();
         }
 
         // Confirm deposit + trade on L2.
@@ -528,7 +528,7 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
         }
         Mandate memory mandate = mandates[loanId];
         if (mandate.borrower != address(0) && block.timestamp < mandate.deadline) {
-            revert CV_QuoteNotExpired();
+            revert CV_MandateNotExpired();
         }
         if (loans[loanId].state != LoanState.NONE) {
             revert CV_InvalidLoanState();
