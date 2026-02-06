@@ -435,7 +435,8 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
             revert CV_LZMessageMismatch();
         }
 
-        (uint256 callStrike, uint256 putStrike, uint64 expiry) = abi.decode(tradeMessage.data, (uint256, uint256, uint64));
+        (uint256 callStrike, uint256 putStrike, uint64 expiry) =
+            abi.decode(tradeMessage.data, (uint256, uint256, uint64));
 
         if (expiry != mandate.maturity || expiry != uint64(pending.maturity)) {
             revert CV_LZMessageMismatch();

@@ -71,12 +71,7 @@ contract CollarVaultTest is Test {
 
         vault.setCollateralConfig(address(wbtc), true, 1e8);
         vault.setSocketBridgeConfig(
-            address(wbtc),
-            ISocketBridge(address(bridge)),
-            ISocketConnector(address(connector)),
-            200_000,
-            "",
-            ""
+            address(wbtc), ISocketBridge(address(bridge)), ISocketConnector(address(connector)), 200_000, "", ""
         );
         vault.grantRole(vault.KEEPER_ROLE(), keeper);
         vault.setDeriveSubaccountId(1);
@@ -198,7 +193,11 @@ contract MockLZMessenger {
         defaultOptions = options;
     }
 
-    function quoteMessage(CollarLZMessages.Message calldata, bytes calldata) external view returns (MessagingFee memory) {
+    function quoteMessage(CollarLZMessages.Message calldata, bytes calldata)
+        external
+        view
+        returns (MessagingFee memory)
+    {
         return MessagingFee({nativeFee: quoteFee, lzTokenFee: 0});
     }
 
