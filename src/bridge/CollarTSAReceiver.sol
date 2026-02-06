@@ -13,6 +13,7 @@ import {
 import {OApp} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
 
 import {IActionVerifier} from "v2-matching/src/interfaces/IActionVerifier.sol";
+// forge-lint: disable-next-line(unused-import)
 import {IMatchingModule} from "v2-matching/src/interfaces/IMatchingModule.sol";
 import {IDepositModule} from "v2-matching/src/interfaces/IDepositModule.sol";
 import {IWithdrawalModule} from "v2-matching/src/interfaces/IWithdrawalModule.sol";
@@ -174,10 +175,7 @@ contract CollarTSAReceiver is AccessControl, OApp {
 
             _signDeposit(message);
             _sendAck(message, CollarLZMessages.Action.DepositConfirmed);
-        } else if (
-            message.action == CollarLZMessages.Action.ReturnRequest
-                || message.action == CollarLZMessages.Action.CancelRequest
-        ) {
+        } else if (message.action == CollarLZMessages.Action.ReturnRequest) {
             if (message.subaccountId != tsa.subAccount()) {
                 revert CTR_InvalidSubaccount();
             }

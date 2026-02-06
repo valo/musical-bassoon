@@ -1252,10 +1252,14 @@ contract CollarVault is AccessControl, EIP712, Pausable, ReentrancyGuard {
     }
 
     modifier onlyKeeperOrExecutor() {
+        _onlyKeeperOrExecutor();
+        _;
+    }
+
+    function _onlyKeeperOrExecutor() internal view {
         if (!(hasRole(KEEPER_ROLE, msg.sender) || hasRole(EXECUTOR_ROLE, msg.sender))) {
             revert CV_NotAuthorized();
         }
-        _;
     }
 
     receive() external payable {}
