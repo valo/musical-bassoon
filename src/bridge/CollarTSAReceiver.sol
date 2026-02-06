@@ -18,6 +18,7 @@ import {IDepositModule} from "v2-matching/src/interfaces/IDepositModule.sol";
 import {IWithdrawalModule} from "v2-matching/src/interfaces/IWithdrawalModule.sol";
 
 import {ICollarTSA} from "../interfaces/ICollarTSA.sol";
+import {ICollarLoanStore} from "../interfaces/ICollarLoanStore.sol";
 import {ISocketMessageTracker} from "../interfaces/ISocketMessageTracker.sol";
 import {CollarLZMessages} from "./CollarLZMessages.sol";
 
@@ -34,6 +35,7 @@ contract CollarTSAReceiver is AccessControl, OApp {
 
     ISocketMessageTracker public socket;
     ICollarTSA public tsa;
+    ICollarLoanStore public loanStore;
     address public vaultRecipient;
 
     uint32 public remoteEid;
@@ -45,18 +47,7 @@ contract CollarTSAReceiver is AccessControl, OApp {
     mapping(uint256 => bool) public returnCompleted;
     mapping(uint256 => bool) public tradeConfirmed;
 
-    struct Mandate {
-        address borrower;
-        address collateralAsset;
-        uint256 borrowAmount;
-        uint256 minCallStrike;
-        uint256 maxPutStrike;
-        uint64 maturity;
-        uint64 deadline;
-        bool consumed;
-    }
-
-    mapping(uint256 => Mandate) public mandates;
+    // Loan terms/collateral accounting is persisted in `loanStore`.
 
     event MessageReceived(bytes32 indexed guid, CollarLZMessages.Action action, uint256 indexed loanId);
     event MessageHandled(bytes32 indexed guid, CollarLZMessages.Action action, uint256 indexed loanId);
@@ -65,6 +56,7 @@ contract CollarTSAReceiver is AccessControl, OApp {
     event OptionsUpdated(bytes options);
     event SocketUpdated(address indexed socket);
     event TSAUpdated(address indexed tsa);
+    event LoanStoreUpdated(address indexed store);
     event VaultRecipientUpdated(address indexed recipient);
 
     error CTR_InvalidPeer();
@@ -116,6 +108,11 @@ contract CollarTSAReceiver is AccessControl, OApp {
         emit TSAUpdated(address(newTsa));
     }
 
+    function setLoanStore(ICollarLoanStore store) external onlyRole(PARAMETER_ROLE) {
+        loanStore = store;
+        emit LoanStoreUpdated(address(store));
+    }
+
     function setVaultRecipient(address recipient) external onlyRole(PARAMETER_ROLE) {
         if (recipient == address(0)) {
             revert CTR_InvalidRecipient();
@@ -153,16 +150,20 @@ contract CollarTSAReceiver is AccessControl, OApp {
             (address borrower, uint256 minCallStrike, uint256 maxPutStrike, uint64 maturity, uint64 deadline) =
                 abi.decode(message.data, (address, uint256, uint256, uint64, uint64));
 
-            mandates[message.loanId] = Mandate({
-                borrower: borrower,
-                collateralAsset: message.asset,
-                borrowAmount: message.amount,
-                minCallStrike: minCallStrike,
-                maxPutStrike: maxPutStrike,
-                maturity: maturity,
-                deadline: deadline,
-                consumed: false
-            });
+            ICollarLoanStore store = loanStore;
+            if (address(store) != address(0)) {
+                store.recordMandate(
+                    message.loanId,
+                    borrower,
+                    message.asset,
+                    message.amount,
+                    minCallStrike,
+                    maxPutStrike,
+                    maturity,
+                    deadline
+                );
+            }
+
             handledMessages[guid] = true;
             emit MessageHandled(guid, message.action, message.loanId);
             return;
@@ -175,6 +176,12 @@ contract CollarTSAReceiver is AccessControl, OApp {
             if (message.subaccountId != tsa.subAccount()) {
                 revert CTR_InvalidSubaccount();
             }
+
+            ICollarLoanStore store = loanStore;
+            if (address(store) != address(0)) {
+                store.recordCollateral(message.loanId, message.asset, message.amount);
+            }
+
             _signDeposit(message);
             _sendAck(message, CollarLZMessages.Action.DepositConfirmed);
         } else if (
@@ -312,6 +319,12 @@ contract CollarTSAReceiver is AccessControl, OApp {
         });
 
         MessagingReceipt memory receipt = _send(message, defaultOptions);
+
+        ICollarLoanStore store = loanStore;
+        if (address(store) != address(0)) {
+            store.markConsumed(loanId);
+        }
+
         tradeConfirmed[loanId] = true;
         return receipt;
     }

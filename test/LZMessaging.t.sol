@@ -12,6 +12,7 @@ import {IActionVerifier} from "v2-matching/src/interfaces/IActionVerifier.sol";
 
 import {CollarVaultMessenger} from "../src/bridge/CollarVaultMessenger.sol";
 import {CollarTSAReceiver} from "../src/bridge/CollarTSAReceiver.sol";
+import {CollarLoanStore} from "../src/CollarLoanStore.sol";
 import {CollarLZMessages} from "../src/bridge/CollarLZMessages.sol";
 import {ISocketMessageTracker} from "../src/interfaces/ISocketMessageTracker.sol";
 import {ICollarTSA} from "../src/interfaces/ICollarTSA.sol";
@@ -141,6 +142,7 @@ contract LZMessagingTest is Test {
     CollarTSAReceiver internal receiver;
     MockSocketMessageTracker internal socket;
     MockCollarTSA internal tsa;
+    CollarLoanStore internal loanStore;
     MockRfqModule internal rfqModule;
     MockERC20 internal token;
     MockEndpointV2 internal endpointL1;
@@ -158,9 +160,13 @@ contract LZMessagingTest is Test {
         socket = new MockSocketMessageTracker();
         rfqModule = new MockRfqModule();
         tsa = new MockCollarTSA(address(token), address(rfqModule));
+        loanStore = new CollarLoanStore(address(this));
 
         messenger = new CollarVaultMessenger(address(this), address(this), address(endpointL1), L2_EID);
         receiver = new CollarTSAReceiver(address(this), address(endpointL2), socket, tsa, L1_EID);
+        receiver.setLoanStore(loanStore);
+        loanStore.grantRole(loanStore.WRITER_ROLE(), address(receiver));
+
         vaultRecipient = address(0xCAFE);
         receiver.setVaultRecipient(vaultRecipient);
 

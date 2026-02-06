@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {TSATestUtils} from "./TSATestUtils.sol";
 import {CollarTSA} from "../../src/CollarTSA.sol";
+import {CollarLoanStore} from "../../src/CollarLoanStore.sol";
 import {CollateralManagementTSA} from "v2-matching/src/tokenizedSubaccounts/CollateralManagementTSA.sol";
 import {IWrappedERC20Asset} from "v2-core/src/interfaces/IWrappedERC20Asset.sol";
 import {ISpotFeed} from "v2-core/src/interfaces/ISpotFeed.sol";
@@ -16,6 +17,7 @@ import {BaseTSA, BaseOnChainSigningTSA} from "v2-matching/src/tokenizedSubaccoun
 contract CollarTSATestUtils is TSATestUtils {
     CollarTSA public tsaImplementation;
     CollarTSA internal collarTsa;
+    CollarLoanStore internal loanStore;
 
     CollarTSA.CollarTSAParams public defaultCollarParams = CollarTSA.CollarTSAParams({
         minSignatureExpiry: 5 minutes,
@@ -100,11 +102,22 @@ contract CollarTSATestUtils is TSATestUtils {
         CollarTSA(address(tsa)).setCollarTSAParams(defaultCollarParams);
         CollarTSA(address(tsa)).setCollateralManagementParams(defaultCollateralManagementParams);
 
+        loanStore = new CollarLoanStore(address(this));
+        CollarTSA(address(tsa)).setLoanStore(address(loanStore));
+
         tsa.setShareKeeper(address(this), true);
 
         signerPk = 0xBEEF;
         signer = vm.addr(signerPk);
 
         tsa.setSigner(signer, true);
+    }
+
+    function _seedLoan(uint256 loanId, uint64 maturity) internal {
+        // Generous collateral amount for tests; TSA enforces that spot sells don't exceed this.
+        loanStore.recordCollateral(loanId, address(markets[MARKET].base), 1_000_000e18);
+        loanStore.recordMandate(
+            loanId, address(0xB0B0), address(markets[MARKET].base), 0, 0, 0, maturity, uint64(block.timestamp + 1 days)
+        );
     }
 }
